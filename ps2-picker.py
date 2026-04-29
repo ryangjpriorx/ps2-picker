@@ -893,7 +893,18 @@ def clear_all_cache():
     save_cache_manifest({})
 
 
-def draw_hold_progress(progress, msg):
+def evict_single_cached(game_name):
+    """Remove a single game from the local cache."""
+    manifest = load_cache_manifest()
+    if game_name in manifest:
+        cache_path = manifest[game_name].get("path", "")
+        if os.path.isdir(cache_path):
+            shutil.rmtree(cache_path, ignore_errors=True)
+        del manifest[game_name]
+        save_cache_manifest(manifest)
+
+
+def draw_hold_progress(progress, msg, cancel_hint="B: Cancel"):
     """Draw a hold-to-confirm progress bar overlay at screen center."""
     ow = int(W * 0.75)
     oh = 90
@@ -912,7 +923,7 @@ def draw_hold_progress(progress, msg):
     fw = max(2, int((bw - 4) * min(progress, 1.0)))
     if progress > 0:
         pygame.draw.rect(screen, DANGER, (bx + 2, by + 2, fw, bh - 4), border_radius=3)
-    hs = F["sm"].render("B: Cancel", True, HINT)
+    hs = F["sm"].render(cancel_hint, True, HINT)
     screen.blit(hs, hs.get_rect(center=(W // 2, oy + oh - 14)))
 
 
@@ -924,6 +935,10 @@ def screen_game_picker(user, card):
     clear_mode = False
     hold_start_time = None
     HOLD_DURATION = 2.0
+    single_clear_mode = False
+    single_clear_target = None
+    single_hold_start = None
+    SINGLE_HOLD_DURATION = 1.5
 
     while True:
         now = pygame.time.get_ticks()
@@ -938,6 +953,19 @@ def screen_game_picker(user, card):
             if ev.type == pygame.QUIT:
                 return False
 
+            # ── Single game clear mode ──
+            if single_clear_mode:
+                if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
+                    single_clear_mode = False
+                    single_clear_target = None
+                    single_hold_start = None
+                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                    single_clear_mode = False
+                    single_clear_target = None
+                    single_hold_start = None
+                continue
+
+            # ── Clear all cache mode ──
             if clear_mode:
                 if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
                     clear_mode = False
@@ -947,6 +975,7 @@ def screen_game_picker(user, card):
                     hold_start_time = None
                 continue
 
+            # ── Normal input ──
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     return False
@@ -969,6 +998,12 @@ def screen_game_picker(user, card):
                         return True
                 if ev.button == 1:
                     return False
+                if ev.button == 2:
+                    cur_name = strip_ext(games[sel])
+                    if cur_name in cached_names:
+                        single_clear_mode = True
+                        single_clear_target = cur_name
+                        single_hold_start = None
                 if ev.button == 6 and cache_count > 0:
                     clear_mode = True
                     hold_start_time = None
@@ -979,7 +1014,22 @@ def screen_game_picker(user, card):
                 if hx == -1: sel = max(0, sel - VISIBLE)
                 if hx == 1: sel = min(len(games) - 1, sel + VISIBLE)
 
-        # Handle clear cache hold detection
+        # ── Hold detection: single game clear (hold A) ──
+        if single_clear_mode and joy is not None:
+            a_held = joy.get_button(0)
+            if a_held:
+                if single_hold_start is None:
+                    single_hold_start = time.time()
+                elapsed = time.time() - single_hold_start
+                if elapsed >= SINGLE_HOLD_DURATION:
+                    evict_single_cached(single_clear_target)
+                    single_clear_mode = False
+                    single_clear_target = None
+                    single_hold_start = None
+            else:
+                single_hold_start = None
+
+        # ── Hold detection: clear all cache (hold Start+Select) ──
         if clear_mode and joy is not None:
             select_held = joy.get_button(6)
             start_held = joy.get_button(7)
@@ -994,7 +1044,8 @@ def screen_game_picker(user, card):
             else:
                 hold_start_time = None
 
-        if not clear_mode:
+        # ── Analog stick navigation ──
+        if not clear_mode and not single_clear_mode:
             if joy is not None and now - last_joy > DPAD_DELAY:
                 ya = joy.get_axis(1)
                 xa = joy.get_axis(0)
@@ -1009,6 +1060,7 @@ def screen_game_picker(user, card):
         if sel < scroll: scroll = sel
         if sel >= scroll + VISIBLE: scroll = sel - VISIBLE + 1
 
+        # ── Build item list with cache indicators ──
         items = []
         for g in games:
             name = strip_ext(g)
@@ -1017,22 +1069,36 @@ def screen_game_picker(user, card):
             else:
                 items.append((name, False))
 
+        # ── Draw ──
         screen.fill(BG)
         cache_label = f"Cache: {cache_count}/{MAX_CACHED_GAMES}"
+        cur_name = strip_ext(games[sel]) if games else ""
+        cur_cached = cur_name in cached_names
+        hints = ["A: Launch", "B: Back"]
+        if cur_cached:
+            hints.append("X: Remove")
         if cache_count > 0:
-            hint = "A: Launch | B: Back | Select: Clear Cache"
-        else:
-            hint = "A: Launch | B: Back"
+            hints.append("Select: Clear All")
         draw_header("PS2 Games",
-                     hint,
+                     " | ".join(hints),
                      f"{sel + 1}/{len(games)}  |  {cache_label}")
         draw_list(items, sel, scroll)
+
+        # ── Overlays ──
+        if single_clear_mode:
+            progress = 0.0
+            if single_hold_start is not None:
+                progress = min((time.time() - single_hold_start) / SINGLE_HOLD_DURATION, 1.0)
+            label = single_clear_target or ""
+            if len(label) > 25:
+                label = label[:22] + "..."
+            draw_hold_progress(progress, f"Hold A to remove: {label}", "B: Cancel")
 
         if clear_mode:
             progress = 0.0
             if hold_start_time is not None:
                 progress = min((time.time() - hold_start_time) / HOLD_DURATION, 1.0)
-            draw_hold_progress(progress, "Hold Start+Select to clear cache")
+            draw_hold_progress(progress, "Hold Start+Select to clear cache", "B: Cancel")
 
         pygame.display.flip()
         clock.tick(30)
