@@ -57,6 +57,18 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
 
 
+# ═══ Color / animation helpers ══════════════════════════════════
+
+def lerp_color(c1, c2, t):
+    """Linearly interpolate between two RGB colors."""
+    t = max(0.0, min(1.0, t))
+    return (
+        int(c1[0] + (c2[0] - c1[0]) * t),
+        int(c1[1] + (c2[1] - c1[1]) * t),
+        int(c1[2] + (c2[2] - c1[2]) * t),
+    )
+
+
 # ═══ User & Memory Card Management ═════════════════════════════
 
 def get_users():
@@ -1156,8 +1168,57 @@ def main():
     pygame.quit()
 
 
+# ═══ Splash screen ══════════════════════════════════════════════
+
+def show_splash():
+    """Animated boot splash screen with fade-in title and accent sweep."""
+    duration = 2.5
+    start = time.time()
+
+    while True:
+        elapsed = time.time() - start
+        if elapsed >= duration:
+            break
+
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
+                return
+
+        t = elapsed / duration
+        screen.fill(BG)
+
+        title_t = min(t / 0.4, 1.0)
+        title_color = lerp_color(BG, HDR, title_t)
+        ts = F['xl'].render("PS2 Picker", True, title_color)
+        screen.blit(ts, ts.get_rect(center=(W // 2, H // 2 - 30)))
+
+        sub_t = max(0.0, min((t - 0.2) / 0.4, 1.0))
+        sub_color = lerp_color(BG, HINT, sub_t)
+        ss = F['md'].render("Console Revival Repair Services", True, sub_color)
+        screen.blit(ss, ss.get_rect(center=(W // 2, H // 2 + 10)))
+
+        line_t = max(0.0, min((t - 0.3) / 0.4, 1.0))
+        line_w = int((W - 100) * line_t)
+        if line_w > 0:
+            lx = (W - line_w) // 2
+            pygame.draw.line(screen, ACCENT, (lx, H // 2 + 35),
+                             (lx + line_w, H // 2 + 35), 2)
+
+        if t > 0.8:
+            fade_t = (t - 0.8) / 0.2
+            overlay = pygame.Surface((W, H))
+            overlay.fill(BG)
+            overlay.set_alpha(int(255 * fade_t))
+            screen.blit(overlay, (0, 0))
+
+        pygame.display.flip()
+        clock.tick(60)
+
+
 # ═══ Entry point ═══════════════════════════════════════════════
-screen, W, H, F, joy = init_display()
-clock = pygame.time.Clock()
+show_splash()
 main()
 
