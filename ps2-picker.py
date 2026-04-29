@@ -12,6 +12,9 @@ import pygame
 # ═══ Configuration ══════════════════════════════════════════════
 ROM_DIR = "/mnt/romm/romm/library/roms/ps2"
 CACHE_DIR = "/mnt/romm/romm/cache"
+LOCAL_CACHE_DIR = os.path.expanduser("~/ps2-cache")
+LOCAL_CACHE_MANIFEST = os.path.join(LOCAL_CACHE_DIR, "manifest.json")
+MAX_CACHED_GAMES = 3
 CORE = os.path.expanduser("~/.config/retroarch/cores/pcsx2_libretro.so")
 USERS_DIR = os.path.expanduser("~/ps2-users")
 EXTS = ('.zip', '.7z', '.iso', '.chd')
@@ -51,6 +54,7 @@ KEY_SEL  = (120, 50, 180)
 
 os.makedirs(USERS_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
 
 
 # ═══ User & Memory Card Management ═════════════════════════════
@@ -528,37 +532,113 @@ def confirm_dialog(msg):
         clock.tick(30)
 
 
-# ═══ Game launch ════════════════════════════════════════════════
+# ═══ Game launch (with local cache) ═══════════════════════════════
+
+def load_cache_manifest():
+    """Load the cache manifest tracking extracted games."""
+    if os.path.exists(LOCAL_CACHE_MANIFEST):
+        try:
+            with open(LOCAL_CACHE_MANIFEST) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_cache_manifest(manifest):
+    """Save the cache manifest."""
+    with open(LOCAL_CACHE_MANIFEST, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+
+def evict_oldest_cached():
+    """Remove the oldest cached game if cache is at capacity."""
+    manifest = load_cache_manifest()
+    if len(manifest) < MAX_CACHED_GAMES:
+        return
+    oldest = min(manifest, key=lambda k: manifest[k].get("last_used", 0))
+    cache_path = manifest[oldest].get("path", "")
+    if os.path.isdir(cache_path):
+        shutil.rmtree(cache_path, ignore_errors=True)
+    del manifest[oldest]
+    save_cache_manifest(manifest)
+    print(f"Cache evicted: {oldest}")
+
+
+def touch_cache_entry(name, extract_dir):
+    """Update or create a cache entry with current timestamp."""
+    manifest = load_cache_manifest()
+    manifest[name] = {
+        "path": extract_dir,
+        "last_used": time.time()
+    }
+    save_cache_manifest(manifest)
+
+
+def find_cached_game(name):
+    """Check if a game is already cached. Returns game path or None."""
+    manifest = load_cache_manifest()
+    if name not in manifest:
+        return None
+    cache_path = manifest[name].get("path", "")
+    if not os.path.isdir(cache_path):
+        del manifest[name]
+        save_cache_manifest(manifest)
+        return None
+    for ext in GAME_EXTS:
+        matches = glob.glob(os.path.join(cache_path, "**", f"*.{ext}"), recursive=True)
+        if matches:
+            return matches[0]
+    # Directory exists but no game files found - remove stale entry
+    shutil.rmtree(cache_path, ignore_errors=True)
+    del manifest[name]
+    save_cache_manifest(manifest)
+    return None
+
 
 def extract_and_launch(game_file, user, card):
-    """Extract if needed, launch RetroArch, save memcard on exit.
+    """Extract if needed (with cache), launch RetroArch, save memcard on exit.
        Returns True to exit app, False to return to game menu."""
     name = strip_ext(game_file)
     path = os.path.join(ROM_DIR, game_file)
     lower = game_file.lower()
 
-    if lower.endswith(('.iso', '.chd')):
+    # Direct launch for bare ISO/CHD (no extraction needed)
+    if lower.endswith((".iso", ".chd")):
         draw_progress(game_file, 1.0, "Launching")
         pygame.time.wait(400)
         pygame.quit()
         subprocess.run(["retroarch", "-L", CORE, "--fullscreen", path])
         save_memcard(user, card)
-        return True  # signal reinit needed
+        return True
 
-    extract_dir = os.path.join(CACHE_DIR, name)
+    # Check local cache first
+    extract_dir = os.path.join(LOCAL_CACHE_DIR, name)
+    cached_game = find_cached_game(name)
+    if cached_game:
+        draw_progress(game_file, 1.0, "Cached \u2013 Launching")
+        touch_cache_entry(name, extract_dir)
+        pygame.time.wait(400)
+        pygame.quit()
+        subprocess.run(["retroarch", "-L", CORE, "--fullscreen", cached_game])
+        save_memcard(user, card)
+        return True
+
+    # Not cached - evict oldest if at capacity
+    evict_oldest_cached()
+
     os.makedirs(extract_dir, exist_ok=True)
-
     draw_progress(game_file, 0, "Reading archive...")
     total_bytes = get_archive_size(path)
 
     proc = None
     try:
-        if lower.endswith('.zip'):
+        if lower.endswith(".zip"):
             proc = subprocess.Popen(
                 ["unzip", "-o", path, "-d", extract_dir],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
-        elif lower.endswith('.7z'):
+        elif lower.endswith(".7z"):
             proc = subprocess.Popen(
                 ["7z", "x", f"-o{extract_dir}", "-y", path],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -611,13 +691,15 @@ def extract_and_launch(game_file, user, card):
         shutil.rmtree(extract_dir, ignore_errors=True)
         return False
 
+    # Save to cache (keep extracted files)
+    touch_cache_entry(name, extract_dir)
+
     draw_progress(game_file, 1.0, "Launching")
     pygame.time.wait(400)
     pygame.quit()
     subprocess.run(["retroarch", "-L", CORE, "--fullscreen", game_path])
     save_memcard(user, card)
-    shutil.rmtree(extract_dir, ignore_errors=True)
-    return True  # signal reinit needed
+    return True
 
 
 # ═══ Screen: User Picker ════════════════════════════════════════
