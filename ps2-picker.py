@@ -2,7 +2,7 @@
 """PS2 Games Launcher with User Profiles and Memory Card Management
    Purple/Gold themed, 640x480 optimized, controller-driven"""
 
-import os, sys, subprocess, glob, shutil, time, json, warnings
+import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 os.environ['DISPLAY'] = ':0'
@@ -67,6 +67,69 @@ def lerp_color(c1, c2, t):
         int(c1[1] + (c2[1] - c1[1]) * t),
         int(c1[2] + (c2[2] - c1[2]) * t),
     )
+
+
+# ═══ Procedural sound effects ═══════════════════════════════════
+SFX = {}
+
+def _gen_tone(freq, duration_ms, volume=0.3, sample_rate=22050):
+    """Generate a sine-wave tone as a pygame Sound."""
+    n = int(sample_rate * duration_ms / 1000)
+    buf = b''
+    for i in range(n):
+        t = i / sample_rate
+        env = 1.0
+        fade = int(sample_rate * 0.005)
+        if i < fade:
+            env = i / fade
+        elif i > n - fade:
+            env = (n - i) / fade
+        val = int(volume * env * 32767 * math.sin(2 * math.pi * freq * t))
+        buf += struct.pack('<h', max(-32768, min(32767, val)))
+    return pygame.mixer.Sound(buffer=buf)
+
+
+def _gen_sweep(f0, f1, duration_ms, volume=0.3, sample_rate=22050):
+    """Generate a frequency sweep as a pygame Sound."""
+    n = int(sample_rate * duration_ms / 1000)
+    buf = b''
+    for i in range(n):
+        t = i / sample_rate
+        frac = i / n
+        freq = f0 + (f1 - f0) * frac
+        env = 1.0
+        fade = int(sample_rate * 0.005)
+        if i < fade:
+            env = i / fade
+        elif i > n - fade:
+            env = (n - i) / fade
+        val = int(volume * env * 32767 * math.sin(2 * math.pi * freq * t))
+        buf += struct.pack('<h', max(-32768, min(32767, val)))
+    return pygame.mixer.Sound(buffer=buf)
+
+
+def init_sounds():
+    """Create all UI sounds procedurally. Call after pygame.mixer.init()."""
+    global SFX
+    try:
+        pygame.mixer.init(22050, -16, 1, 512)
+    except Exception:
+        return
+    SFX = {
+        'navigate': _gen_tone(800, 50, 0.12),
+        'select':   _gen_tone(1200, 90, 0.2),
+        'back':     _gen_sweep(600, 350, 90, 0.18),
+        'error':    _gen_tone(280, 180, 0.25),
+        'launch':   _gen_sweep(500, 1400, 250, 0.22),
+        'type':     _gen_tone(1000, 25, 0.08),
+    }
+
+
+def play_sfx(name):
+    """Play a named sound effect (safe no-op if sounds unavailable)."""
+    s = SFX.get(name)
+    if s:
+        s.play()
 
 
 # ═══ User & Memory Card Management ═════════════════════════════
@@ -366,7 +429,7 @@ def on_screen_keyboard(prompt):
                 return None
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    return None
+                    play_sfx('back'); return None
                 if ev.key == pygame.K_RETURN:
                     if text.strip():
                         return text.strip()
@@ -377,10 +440,10 @@ def on_screen_keyboard(prompt):
                         text += ev.unicode
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == 1:  # B = cancel
-                    return None
+                    play_sfx('back'); return None
                 if ev.button == 7:  # Start = confirm
                     if text.strip():
-                        return text.strip()
+                        play_sfx('select'); return text.strip()
                 if ev.button == 9:  # L3 = shift (one char)
                     shift = not shift
                 if ev.button in (8, 10, 11):  # R3 = caps lock
@@ -404,13 +467,13 @@ def on_screen_keyboard(prompt):
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
-                    ky = (ky - 1) % KB_NROWS
+                    ky = (ky - 1) % KB_NROWS; play_sfx('navigate')
                 if hy == -1:
-                    ky = (ky + 1) % KB_NROWS
+                    ky = (ky + 1) % KB_NROWS; play_sfx('navigate')
                 if hx == -1:
-                    kx = (kx - 1) % KB_COLS
+                    kx = (kx - 1) % KB_COLS; play_sfx('navigate')
                 if hx == 1:
-                    kx = (kx + 1) % KB_COLS
+                    kx = (kx + 1) % KB_COLS; play_sfx('navigate')
 
         # Analog stick
         if joy is not None and now - last_joy > DPAD_DELAY:
@@ -504,24 +567,24 @@ def confirm_dialog(msg):
                 return False
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    return False
+                    play_sfx('back'); return False
                 if ev.key in (pygame.K_LEFT, pygame.K_RIGHT):
-                    sel = 1 - sel
+                    sel = 1 - sel; play_sfx('navigate')
                 if ev.key == pygame.K_RETURN:
-                    return sel == 0
+                    play_sfx('select' if sel == 0 else 'back'); return sel == 0
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == 1:
-                    return False
+                    play_sfx('back'); return False
                 if ev.button == 0:
-                    return sel == 0
+                    play_sfx('select' if sel == 0 else 'back'); return sel == 0
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hx != 0:
-                    sel = 1 - sel
+                    sel = 1 - sel; play_sfx('navigate')
         if joy is not None and now - last_joy > DPAD_DELAY:
             xa = joy.get_axis(0)
             if abs(xa) > 0.5:
-                sel = 1 - sel
+                sel = 1 - sel; play_sfx('navigate')
                 last_joy = now
 
         screen.fill(BG)
@@ -682,6 +745,7 @@ def extract_and_launch(game_file, user, card):
         clock.tick(5)
 
     if proc.returncode != 0:
+        play_sfx('error')
         draw_progress(game_file, 0, "Error")
         pygame.time.wait(2000)
         shutil.rmtree(extract_dir, ignore_errors=True)
@@ -698,6 +762,7 @@ def extract_and_launch(game_file, user, card):
             break
 
     if not game_path:
+        play_sfx('error')
         draw_progress(game_file, 0, "No ISO found")
         pygame.time.wait(2000)
         shutil.rmtree(extract_dir, ignore_errors=True)
@@ -734,32 +799,34 @@ def screen_user_picker():
                 if ev.key == pygame.K_ESCAPE:
                     return None
                 if ev.key == pygame.K_UP:
-                    sel = max(0, sel - 1)
+                    sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN:
-                    sel = min(len(items) - 1, sel + 1)
+                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
                 if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
                     if sel == len(items) - 1:
+                        play_sfx('select')
                         name = on_screen_keyboard("Enter Username")
                         if name:
                             create_user(name)
                     else:
-                        return users[sel]
+                        play_sfx('select'); return users[sel]
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == 0:
                     if sel == len(items) - 1:
+                        play_sfx('select')
                         name = on_screen_keyboard("Enter Username")
                         if name:
                             create_user(name)
                     else:
-                        return users[sel]
+                        play_sfx('select'); return users[sel]
                 if ev.button == 1:
-                    return None
+                    play_sfx('back'); return None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
-                    sel = max(0, sel - 1)
+                    sel = max(0, sel - 1); play_sfx('navigate')
                 if hy == -1:
-                    sel = min(len(items) - 1, sel + 1)
+                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
 
         if joy is not None and now - last_joy > DPAD_DELAY:
             ya = joy.get_axis(1)
@@ -769,7 +836,7 @@ def screen_user_picker():
             elif ya > 0.5:
                 sel = min(len(items) - 1, sel + 1); moved = True
             if moved:
-                last_joy = now
+                play_sfx('navigate'); last_joy = now
 
         if sel < scroll:
             scroll = sel
@@ -810,43 +877,47 @@ def screen_memcard_manager(user):
                 return None
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    return None
+                    play_sfx('back'); return None
                 if ev.key == pygame.K_UP:
-                    sel = max(0, sel - 1)
+                    sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN:
-                    sel = min(len(items) - 1, sel + 1)
+                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
                 if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
                     if sel == len(items) - 1:
+                        play_sfx('select')
                         name = on_screen_keyboard("Card Name")
                         if name:
                             create_card(user, name)
                     elif sel < len(cards):
-                        return cards[sel]
+                        play_sfx('select'); return cards[sel]
                 if ev.key == pygame.K_DELETE or ev.key == pygame.K_x:
                     if sel < len(cards) and len(cards) > 1:
                         if confirm_dialog(f"Delete {cards[sel]}?"):
+                            play_sfx('select')
                             delete_card(user, cards[sel])
                             sel = min(sel, len(get_cards(user)))
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == 0:
                     if sel == len(items) - 1:
+                        play_sfx('select')
                         name = on_screen_keyboard("Card Name")
                         if name:
                             create_card(user, name)
                     elif sel < len(cards):
-                        return cards[sel]
+                        play_sfx('select'); return cards[sel]
                 if ev.button == 1:
-                    return None
+                    play_sfx('back'); return None
                 if ev.button == 2 and sel < len(cards) and len(cards) > 1:
                     if confirm_dialog(f"Delete {cards[sel]}?"):
+                        play_sfx('select')
                         delete_card(user, cards[sel])
                         sel = min(sel, len(get_cards(user)))
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
-                    sel = max(0, sel - 1)
+                    sel = max(0, sel - 1); play_sfx('navigate')
                 if hy == -1:
-                    sel = min(len(items) - 1, sel + 1)
+                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
 
         if joy is not None and now - last_joy > DPAD_DELAY:
             ya = joy.get_axis(1)
@@ -856,7 +927,7 @@ def screen_memcard_manager(user):
             elif ya > 0.5:
                 sel = min(len(items) - 1, sel + 1); moved = True
             if moved:
-                last_joy = now
+                play_sfx('navigate'); last_joy = now
 
         if sel < scroll:
             scroll = sel
@@ -989,26 +1060,28 @@ def screen_game_picker(user, card):
             # ── Normal input ──
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    return False
+                    play_sfx('back'); return False
                 if ev.key == pygame.K_UP:
-                    sel = max(0, sel - 1)
+                    sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN:
-                    sel = min(len(games) - 1, sel + 1)
+                    sel = min(len(games) - 1, sel + 1); play_sfx('navigate')
                 if ev.key == pygame.K_LEFT or ev.key == pygame.K_PAGEUP:
-                    sel = max(0, sel - VISIBLE)
+                    sel = max(0, sel - VISIBLE); play_sfx('navigate')
                 if ev.key == pygame.K_RIGHT or ev.key == pygame.K_PAGEDOWN:
-                    sel = min(len(games) - 1, sel + VISIBLE)
+                    sel = min(len(games) - 1, sel + VISIBLE); play_sfx('navigate')
                 if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('launch')
                     result = extract_and_launch(games[sel], user, card)
                     if result:
                         return True
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == 0:
+                    play_sfx('launch')
                     result = extract_and_launch(games[sel], user, card)
                     if result:
                         return True
                 if ev.button == 1:
-                    return False
+                    play_sfx('back'); return False
                 if ev.button == 2:
                     cur_name = strip_ext(games[sel])
                     if cur_name in cached_names:
@@ -1020,10 +1093,10 @@ def screen_game_picker(user, card):
                     hold_start_time = None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
-                if hy == 1: sel = max(0, sel - 1)
-                if hy == -1: sel = min(len(games) - 1, sel + 1)
-                if hx == -1: sel = max(0, sel - VISIBLE)
-                if hx == 1: sel = min(len(games) - 1, sel + VISIBLE)
+                if hy == 1: sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1: sel = min(len(games) - 1, sel + 1); play_sfx('navigate')
+                if hx == -1: sel = max(0, sel - VISIBLE); play_sfx('navigate')
+                if hx == 1: sel = min(len(games) - 1, sel + VISIBLE); play_sfx('navigate')
 
         # ── Hold detection: single game clear (hold A) ──
         if single_clear_mode and joy is not None:
@@ -1066,7 +1139,7 @@ def screen_game_picker(user, card):
                 if xa < -0.5: sel = max(0, sel - VISIBLE); moved = True
                 elif xa > 0.5: sel = min(len(games) - 1, sel + VISIBLE); moved = True
                 if moved:
-                    last_joy = now
+                    play_sfx('navigate'); last_joy = now
 
         if sel < scroll: scroll = sel
         if sel >= scroll + VISIBLE: scroll = sel - VISIBLE + 1
@@ -1151,6 +1224,7 @@ def main():
                 # RetroArch exited - reinitialize pygame fully
                 screen, W, H, F, joy = init_display()
                 clock = pygame.time.Clock()
+                init_sounds()
                 pygame.event.clear()
 
                 # Post-run tasks with status screen
@@ -1263,6 +1337,7 @@ def show_welcome_back(user):
 
 
 # ═══ Entry point ═══════════════════════════════════════════════
+init_sounds()
 show_splash()
 main()
 
