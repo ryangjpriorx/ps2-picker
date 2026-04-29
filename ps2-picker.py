@@ -698,7 +698,6 @@ def extract_and_launch(game_file, user, card):
     pygame.time.wait(400)
     pygame.quit()
     subprocess.run(["retroarch", "-L", CORE, "--fullscreen", game_path])
-    save_memcard(user, card)
     return True
 
 
@@ -1104,41 +1103,61 @@ def screen_game_picker(user, card):
         clock.tick(30)
 
 
-# ═══ Main loop ══════════════════════════════════════════════════
+# ═══ Main loop ═════════════════════════════════════════
+
+def draw_status_screen(title, detail=""):
+    """Draw a centered status message (for post-run tasks)."""
+    screen.fill(BG)
+    ts = F["lg"].render(title, True, HDR)
+    screen.blit(ts, ts.get_rect(center=(W // 2, H // 2 - 15)))
+    if detail:
+        ds = F["md"].render(detail, True, TXT)
+        screen.blit(ds, ds.get_rect(center=(W // 2, H // 2 + 15)))
+    pygame.display.flip()
+
 
 def main():
-    global screen, W, H, F, joy
+    global screen, W, H, F, joy, clock
 
     while True:
-        # Step 1: Pick user
         user = screen_user_picker()
         if user is None:
             break
 
         while True:
-            # Step 2: Pick memory card
             card = screen_memcard_manager(user)
             if card is None:
-                break  # back to user picker
+                break
 
-            # Step 3: Load memory card
             draw_center_msg("Loading Memory Card...", card, user)
             load_memcard(user, card)
             time.sleep(0.5)
 
-            # Step 4: Game picker (loops until back or launch)
             needs_reinit = screen_game_picker(user, card)
 
             if needs_reinit:
-                # RetroArch ran, pygame was quit, reinitialize
+                # RetroArch exited - reinitialize pygame fully
                 screen, W, H, F, joy = init_display()
-                # After reinit, go back to memcard screen for this user
+                clock = pygame.time.Clock()
+                pygame.event.clear()
+
+                # Post-run tasks with status screen
+                draw_status_screen("Saving Memory Card...", card)
+                save_memcard(user, card)
+                time.sleep(0.4)
+
+                draw_status_screen("Returning to menu...")
+                time.sleep(0.6)
+
+                # Flush any stale input from RetroArch session
+                pygame.event.clear()
+                # Continue inner loop -> back to memcard screen
 
     pygame.quit()
 
 
-if __name__ == "__main__":
-    if not games:
-        print(f"No ROMs found in {ROM_DIR}")
-        sys.exit(1)
-    main()
+# ═══ Entry point ═══════════════════════════════════════════════
+screen, W, H, F, joy = init_display()
+clock = pygame.time.Clock()
+main()
+
