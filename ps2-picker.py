@@ -1161,6 +1161,9 @@ def main():
                 draw_status_screen("Returning to menu...")
                 time.sleep(0.6)
 
+                # Welcome-back splash
+                show_welcome_back(user)
+
                 # Flush any stale input from RetroArch session
                 pygame.event.clear()
                 # Continue inner loop -> back to memcard screen
@@ -1209,6 +1212,47 @@ def show_splash():
 
         if t > 0.8:
             fade_t = (t - 0.8) / 0.2
+            overlay = pygame.Surface((W, H))
+            overlay.fill(BG)
+            overlay.set_alpha(int(255 * fade_t))
+            screen.blit(overlay, (0, 0))
+
+        pygame.display.flip()
+        clock.tick(60)
+
+
+def show_welcome_back(user):
+    """Quick welcome-back splash after RetroArch exits."""
+    duration = 1.5
+    start = time.time()
+
+    while True:
+        elapsed = time.time() - start
+        if elapsed >= duration:
+            break
+
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
+                return
+
+        t = elapsed / duration
+        screen.fill(BG)
+
+        wb_t = min(t / 0.3, 1.0)
+        wb_color = lerp_color(BG, HDR, wb_t)
+        ws = F['xl'].render("Welcome Back", True, wb_color)
+        screen.blit(ws, ws.get_rect(center=(W // 2, H // 2 - 20)))
+
+        name_t = max(0.0, min((t - 0.15) / 0.3, 1.0))
+        name_color = lerp_color(BG, TXT_SEL, name_t)
+        ns = F['lg'].render(user, True, name_color)
+        screen.blit(ns, ns.get_rect(center=(W // 2, H // 2 + 15)))
+
+        if t > 0.75:
+            fade_t = (t - 0.75) / 0.25
             overlay = pygame.Surface((W, H))
             overlay.fill(BG)
             overlay.set_alpha(int(255 * fade_t))
