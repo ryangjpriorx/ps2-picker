@@ -317,14 +317,20 @@ def draw_progress(game_name, progress, status="Extracting"):
 
 # ═══ On-screen keyboard ════════════════════════════════════════
 
-KB_ROWS = [
+KB_ROWS_LOWER = [
+    list("abcdefghij"),
+    list("klmnopqrst"),
+    list("uvwxyz0123"),
+    list("456789_- ") + ["\u2190", "\u2713"],
+]
+KB_ROWS_UPPER = [
     list("ABCDEFGHIJ"),
     list("KLMNOPQRST"),
     list("UVWXYZ0123"),
     list("456789_- ") + ["\u2190", "\u2713"],
 ]
 KB_COLS = 10
-KB_NROWS = len(KB_ROWS)
+KB_NROWS = len(KB_ROWS_LOWER)
 
 
 def on_screen_keyboard(prompt):
@@ -332,8 +338,12 @@ def on_screen_keyboard(prompt):
     text = ""
     kx, ky = 0, 0
     last_joy = 0
+    caps_lock = False
+    shift = False
 
     while True:
+        upper = caps_lock ^ shift
+        kb_rows = KB_ROWS_UPPER if upper else KB_ROWS_LOWER
         now = pygame.time.get_ticks()
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -350,13 +360,18 @@ def on_screen_keyboard(prompt):
                     if len(text) < 20:
                         text += ev.unicode
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 1:
+                if ev.button == 1:  # B = cancel
                     return None
-                if ev.button in (7, 9):
+                if ev.button == 7:  # Start = confirm
                     if text.strip():
                         return text.strip()
-                if ev.button == 0:
-                    ch = KB_ROWS[ky][kx]
+                if ev.button == 9:  # L3 = shift (one char)
+                    shift = not shift
+                if ev.button in (8, 10, 11):  # R3 = caps lock
+                    caps_lock = not caps_lock
+                    shift = False
+                if ev.button == 0:  # A = type selected char
+                    ch = kb_rows[ky][kx]
                     if ch == "\u2713":
                         if text.strip():
                             return text.strip()
@@ -368,6 +383,8 @@ def on_screen_keyboard(prompt):
                     else:
                         if len(text) < 20:
                             text += ch
+                            if shift:
+                                shift = False
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
@@ -397,10 +414,8 @@ def on_screen_keyboard(prompt):
 
         # Draw
         screen.fill(BG)
-        # Prompt
         ps = F['lg'].render(prompt, True, HDR)
         screen.blit(ps, ps.get_rect(center=(W // 2, 30)))
-        # Text field
         field_w = int(W * 0.7)
         field_x = (W - field_w) // 2
         pygame.draw.rect(screen, BAR_BG, (field_x, 55, field_w, 30), border_radius=6)
@@ -409,7 +424,13 @@ def on_screen_keyboard(prompt):
         ts = F['md_b'].render(cursor, True, TXT_SEL)
         screen.blit(ts, (field_x + 8, 61))
 
-        # Keyboard grid
+        if caps_lock:
+            ind = F['sm'].render('CAPS', True, TXT_SEL)
+            screen.blit(ind, (field_x + field_w + 6, 61))
+        elif shift:
+            ind = F['sm'].render('SHIFT', True, TXT_SEL)
+            screen.blit(ind, (field_x + field_w + 6, 61))
+
         cell_w = 52
         cell_h = 32
         grid_w = KB_COLS * cell_w
@@ -420,13 +441,12 @@ def on_screen_keyboard(prompt):
             for rx in range(KB_COLS):
                 x = gx_start + rx * cell_w
                 y = gy_start + ry * cell_h
-                ch = KB_ROWS[ry][rx]
+                ch = kb_rows[ry][rx]
                 selected = (rx == kx and ry == ky)
                 bg = KEY_SEL if selected else KEY_BG
                 pygame.draw.rect(screen, bg, (x + 2, y + 2, cell_w - 4, cell_h - 4), border_radius=4)
                 if selected:
                     pygame.draw.rect(screen, TXT_SEL, (x + 2, y + 2, cell_w - 4, cell_h - 4), 2, border_radius=4)
-                # Display label
                 if ch == "\u2190":
                     label = "DEL"
                 elif ch == "\u2713":
@@ -438,9 +458,8 @@ def on_screen_keyboard(prompt):
                 cs = F['md_b' if selected else 'md'].render(label, True, TXT_SEL if selected else TXT)
                 screen.blit(cs, cs.get_rect(center=(x + cell_w // 2, y + cell_h // 2)))
 
-        # Hints
-        hs = F['sm'].render("A: Type  |  Start: Confirm  |  B: Cancel  |  D-pad: Navigate", True, HINT)
-        screen.blit(hs, hs.get_rect(center=(W // 2, H - 20)))
+        hint = F['sm'].render('A: Type | B: Cancel | Start: Confirm | L3: Shift | R3: Caps', True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
 
         pygame.display.flip()
         clock.tick(30)
