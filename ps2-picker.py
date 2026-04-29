@@ -861,20 +861,92 @@ def screen_memcard_manager(user):
         clock.tick(30)
 
 
-# ═══ Screen: Game Picker ════════════════════════════════════════
+# ═══ Screen: Game Picker ════════════════════════════════
+
+def is_game_cached(game_file):
+    """Check if a game is in the local cache."""
+    name = strip_ext(game_file)
+    manifest = load_cache_manifest()
+    if name not in manifest:
+        return False
+    cache_path = manifest[name].get("path", "")
+    return os.path.isdir(cache_path)
+
+
+def get_cache_count():
+    """Return number of games currently cached."""
+    manifest = load_cache_manifest()
+    count = 0
+    for name, info in list(manifest.items()):
+        if os.path.isdir(info.get("path", "")):
+            count += 1
+    return count
+
+
+def clear_all_cache():
+    """Remove all cached games."""
+    manifest = load_cache_manifest()
+    for name, info in manifest.items():
+        cache_path = info.get("path", "")
+        if os.path.isdir(cache_path):
+            shutil.rmtree(cache_path, ignore_errors=True)
+    save_cache_manifest({})
+
+
+def draw_hold_progress(progress, msg):
+    """Draw a hold-to-confirm progress bar overlay at screen center."""
+    ow = int(W * 0.75)
+    oh = 90
+    ox = (W - ow) // 2
+    oy = (H - oh) // 2
+    pygame.draw.rect(screen, (30, 12, 50), (ox, oy, ow, oh), border_radius=8)
+    pygame.draw.rect(screen, ACCENT, (ox, oy, ow, oh), 2, border_radius=8)
+    ts = F["md_b"].render(msg, True, HDR)
+    screen.blit(ts, ts.get_rect(center=(W // 2, oy + 22)))
+    bw = ow - 40
+    bh = 16
+    bx = ox + 20
+    by = oy + 44
+    pygame.draw.rect(screen, BAR_BG, (bx, by, bw, bh), border_radius=4)
+    pygame.draw.rect(screen, BAR_BORDER, (bx, by, bw, bh), 2, border_radius=4)
+    fw = max(2, int((bw - 4) * min(progress, 1.0)))
+    if progress > 0:
+        pygame.draw.rect(screen, DANGER, (bx + 2, by + 2, fw, bh - 4), border_radius=3)
+    hs = F["sm"].render("B: Cancel", True, HINT)
+    screen.blit(hs, hs.get_rect(center=(W // 2, oy + oh - 14)))
+
 
 def screen_game_picker(user, card):
     """Game selection screen. Returns True if reinit needed, False to go back."""
     sel = 0
     scroll = 0
     last_joy = 0
+    clear_mode = False
+    hold_start_time = None
+    HOLD_DURATION = 2.0
 
     while True:
         now = pygame.time.get_ticks()
+        manifest = load_cache_manifest()
+        cached_names = set()
+        for cname, cinfo in manifest.items():
+            if os.path.isdir(cinfo.get("path", "")):
+                cached_names.add(cname)
+        cache_count = len(cached_names)
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 return False
+
+            if clear_mode:
+                if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
+                    clear_mode = False
+                    hold_start_time = None
+                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                    clear_mode = False
+                    hold_start_time = None
+                continue
+
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     return False
@@ -897,6 +969,9 @@ def screen_game_picker(user, card):
                         return True
                 if ev.button == 1:
                     return False
+                if ev.button == 6 and cache_count > 0:
+                    clear_mode = True
+                    hold_start_time = None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1: sel = max(0, sel - 1)
@@ -904,27 +979,61 @@ def screen_game_picker(user, card):
                 if hx == -1: sel = max(0, sel - VISIBLE)
                 if hx == 1: sel = min(len(games) - 1, sel + VISIBLE)
 
-        if joy is not None and now - last_joy > DPAD_DELAY:
-            ya = joy.get_axis(1)
-            xa = joy.get_axis(0)
-            moved = False
-            if ya < -0.5: sel = max(0, sel - 1); moved = True
-            elif ya > 0.5: sel = min(len(games) - 1, sel + 1); moved = True
-            if xa < -0.5: sel = max(0, sel - VISIBLE); moved = True
-            elif xa > 0.5: sel = min(len(games) - 1, sel + VISIBLE); moved = True
-            if moved:
-                last_joy = now
+        # Handle clear cache hold detection
+        if clear_mode and joy is not None:
+            select_held = joy.get_button(6)
+            start_held = joy.get_button(7)
+            if select_held and start_held:
+                if hold_start_time is None:
+                    hold_start_time = time.time()
+                elapsed = time.time() - hold_start_time
+                if elapsed >= HOLD_DURATION:
+                    clear_all_cache()
+                    clear_mode = False
+                    hold_start_time = None
+            else:
+                hold_start_time = None
+
+        if not clear_mode:
+            if joy is not None and now - last_joy > DPAD_DELAY:
+                ya = joy.get_axis(1)
+                xa = joy.get_axis(0)
+                moved = False
+                if ya < -0.5: sel = max(0, sel - 1); moved = True
+                elif ya > 0.5: sel = min(len(games) - 1, sel + 1); moved = True
+                if xa < -0.5: sel = max(0, sel - VISIBLE); moved = True
+                elif xa > 0.5: sel = min(len(games) - 1, sel + VISIBLE); moved = True
+                if moved:
+                    last_joy = now
 
         if sel < scroll: scroll = sel
         if sel >= scroll + VISIBLE: scroll = sel - VISIBLE + 1
 
-        items = [(strip_ext(g), False) for g in games]
+        items = []
+        for g in games:
+            name = strip_ext(g)
+            if name in cached_names:
+                items.append(("⚡ " + name, False))
+            else:
+                items.append((name, False))
 
         screen.fill(BG)
+        cache_label = f"Cache: {cache_count}/{MAX_CACHED_GAMES}"
+        if cache_count > 0:
+            hint = "A: Launch | B: Back | Select: Clear Cache"
+        else:
+            hint = "A: Launch | B: Back"
         draw_header("PS2 Games",
-                     "Up/Down: Scroll  |  Left/Right: Page  |  A: Launch  |  B: Back",
-                     f"{sel + 1} / {len(games)}")
+                     hint,
+                     f"{sel + 1}/{len(games)}  |  {cache_label}")
         draw_list(items, sel, scroll)
+
+        if clear_mode:
+            progress = 0.0
+            if hold_start_time is not None:
+                progress = min((time.time() - hold_start_time) / HOLD_DURATION, 1.0)
+            draw_hold_progress(progress, "Hold Start+Select to clear cache")
+
         pygame.display.flip()
         clock.tick(30)
 
