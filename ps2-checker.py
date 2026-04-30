@@ -22,17 +22,58 @@ HAS_PYGAME = importlib.util.find_spec('pygame') is not None
 
 # ═══ Theme (matches main app) ══════════════════════════════════
 
-BG       = (18, 8, 32)
-SEL_BG   = (88, 28, 135)
-TXT      = (220, 210, 190)
-TXT_DIM  = (140, 130, 120)
-HDR      = (255, 200, 50)
-HINT     = (210, 170, 100)
-BAR_BG   = (40, 20, 65)
-ACCENT   = (147, 51, 234)
-DANGER   = (200, 60, 60)
-SUCCESS  = (50, 180, 80)
-KEY_BG   = (40, 18, 65)
+import colorsys
+
+# Default theme (matches main app defaults)
+_DEFAULT_THEME = {
+    "bg":        [18, 8, 32],
+    "accent":    [147, 51, 234],
+    "highlight": [255, 200, 50],
+    "text":      [220, 210, 190],
+}
+
+def _clamp(v): return max(0, min(255, int(v)))
+def _blend(c1, c2, t): return tuple(_clamp(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
+def _lighten(c, amt=40): return tuple(_clamp(v + amt) for v in c)
+def _dim(c, factor=0.6): return tuple(_clamp(v * factor) for v in c)
+
+def _apply_theme(theme_dict=None):
+    """Derive all UI colors from 4 base colors. Mirrors main app logic."""
+    global BG, SEL_BG, TXT, TXT_DIM, HDR, HINT, BAR_BG, ACCENT, DANGER, SUCCESS, KEY_BG
+    t = dict(_DEFAULT_THEME)
+    if theme_dict:
+        t.update(theme_dict)
+    bg  = tuple(t["bg"])
+    acc = tuple(t["accent"])
+    hi  = tuple(t["highlight"])
+    txt = tuple(t["text"])
+    BG      = bg
+    ACCENT  = acc
+    HDR     = hi
+    TXT     = txt
+    TXT_DIM = _dim(txt, 0.62)
+    HINT    = _blend(hi, txt, 0.45)
+    SEL_BG  = _blend(bg, acc, 0.45)
+    BAR_BG  = _lighten(bg, 22)
+    KEY_BG  = _lighten(bg, 20)
+    DANGER  = (200, 60, 60)
+    SUCCESS = (50, 180, 80)
+
+def _load_theme():
+    """Load theme from the shared global config (same file main app uses)."""
+    config_path = os.path.join(APP_DIR, 'config.json')
+    theme = None
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                cfg = json.load(f)
+            theme = cfg.get('theme')
+        except Exception:
+            pass
+    _apply_theme(theme)
+
+# Apply theme on import (picks up user's config if it exists)
+_load_theme()
 
 REF_W, REF_H = 640, 480
 
