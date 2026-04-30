@@ -228,6 +228,74 @@ def get_current_theme():
 # Apply theme on import (uses defaults if no config exists yet)
 load_theme_from_config()
 
+# ═══ Input Mapping System ═══════════════════════════════════════
+# Maps logical actions to joystick button numbers.
+# Keyboard keys are NEVER remapped — they always work as a safety fallback.
+# If controller binds are broken, keyboard Escape/Enter/arrows still work.
+
+DEFAULT_BUTTON_MAP = {
+    "confirm":    0,   # A — select, enter, launch
+    "back":       1,   # B — cancel, go back
+    "extra":      2,   # X — contextual extra action
+    "alt":        3,   # Y — alternative action
+    "shoulder_l": 4,   # L1 — toggle hidden files, etc.
+    "select":     6,   # Select — search
+    "start":      7,   # Start — settings, confirm
+}
+
+# Friendly display names
+BTN_LABELS = {
+    "confirm":    "Confirm / Select (A)",
+    "back":       "Back / Cancel (B)",
+    "extra":      "Extra Action (X)",
+    "alt":        "Alt Action (Y)",
+    "shoulder_l": "Left Shoulder (L1)",
+    "select":     "Menu Select",
+    "start":      "Menu Start",
+}
+
+# Standard SDL button name lookup
+SDL_BUTTON_NAMES = {
+    0: "A", 1: "B", 2: "X", 3: "Y",
+    4: "L1", 5: "R1", 6: "Select", 7: "Start",
+    8: "L3", 9: "R3", 10: "Guide", 11: "Misc",
+}
+
+# Active mapping (mutable at runtime)
+BTN = dict(DEFAULT_BUTTON_MAP)
+
+
+def load_button_map():
+    """Load button mappings from global config."""
+    global BTN
+    BTN = dict(DEFAULT_BUTTON_MAP)
+    if os.path.exists(GLOBAL_CONFIG_PATH):
+        try:
+            with open(GLOBAL_CONFIG_PATH) as f:
+                cfg = json.load(f)
+            saved = cfg.get("button_map", {})
+            for k in BTN:
+                if k in saved and isinstance(saved[k], int):
+                    BTN[k] = saved[k]
+        except Exception:
+            pass
+
+
+def save_button_map():
+    """Save current button mappings to global config."""
+    cfg = load_global_config()
+    cfg["button_map"] = dict(BTN)
+    save_global_config(cfg)
+
+
+def btn_name(button_num):
+    """Get a friendly name for a joystick button number."""
+    return SDL_BUTTON_NAMES.get(button_num, f"Btn {button_num}")
+
+
+# Load mappings on import
+load_button_map()
+
 os.makedirs(APP_DIR, exist_ok=True)
 os.makedirs(USERS_DIR, exist_ok=True)
 
@@ -672,7 +740,7 @@ def on_screen_keyboard(prompt="Enter Text"):
                     if len(text) < 40:
                         text += ev.unicode; play_sfx('type')
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:  # A = type selected char
+                if ev.button == BTN["confirm"]:  # A = type selected char
                     ch = kb_rows[ky][kx]
                     if ch == "\u2713":
                         if text.strip():
@@ -685,9 +753,9 @@ def on_screen_keyboard(prompt="Enter Text"):
                     else:
                         if len(text) < 40:
                             text += ch; play_sfx('type')
-                if ev.button == 1:  # B = cancel
+                if ev.button == BTN["back"]:  # B = cancel
                     play_sfx('back'); return None
-                if ev.button == 7:  # Start = confirm
+                if ev.button == BTN["start"]:  # Start = confirm
                     if text.strip():
                         play_sfx('select'); return text.strip()
             if ev.type == pygame.JOYHATMOTION:
@@ -772,9 +840,9 @@ def confirm_dialog(message):
                 if ev.key == pygame.K_RETURN:
                     play_sfx('select' if sel == 0 else 'back'); return sel == 0
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return False
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     play_sfx('select' if sel == 0 else 'back'); return sel == 0
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -827,9 +895,9 @@ def number_input(prompt, current_val, min_val=1, max_val=99, step=1):
                 if ev.key == pygame.K_DOWN or ev.key == pygame.K_LEFT:
                     val = max(min_val, val - step); play_sfx('navigate')
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0 or ev.button == 7:
+                if ev.button == BTN["confirm"] or ev.button == BTN["start"]:
                     play_sfx('select'); return val
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -897,11 +965,11 @@ def volume_slider(prompt="Volume", current_vol=0.5, muted=False):
                 if ev.key == pygame.K_m:
                     is_muted = not is_muted; play_sfx('navigate')
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0 or ev.button == 7:
+                if ev.button == BTN["confirm"] or ev.button == BTN["start"]:
                     play_sfx('select'); return (vol, is_muted)
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return None
-                if ev.button == 2:  # X = toggle mute
+                if ev.button == BTN["extra"]:  # X = toggle mute
                     is_muted = not is_muted; play_sfx('navigate')
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -1008,9 +1076,9 @@ def _drive_selector():
                 if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
                     play_sfx('select'); return drives[sel]
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     play_sfx('select'); return drives[sel]
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -1133,13 +1201,13 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
                         else:
                             play_sfx('error')
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0 and entries:  # A = enter folder / select file
+                if ev.button == BTN["confirm"] and entries:  # A = enter folder / select file
                     full = os.path.join(current, entries[sel])
                     if sel < n_dirs:
                         current = full; sel = 0; scroll = 0; play_sfx('select')
                     elif mode == "file":
                         play_sfx('select'); return full
-                if ev.button == 1:  # B = go up one level (never exits)
+                if ev.button == BTN["back"]:  # B = go up one level (never exits)
                     play_sfx('back')
                     parent = os.path.dirname(current)
                     if parent != current:
@@ -1151,12 +1219,12 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
                             current = drive; sel = 0; scroll = 0
                     else:
                         play_sfx('error')  # Already at Linux root
-                if ev.button == 2:  # X = select this folder/file
+                if ev.button == BTN["extra"]:  # X = select this folder/file
                     if mode == "folder":
                         play_sfx('select'); return current
                     elif mode == "file" and entries and sel >= n_dirs:
                         play_sfx('select'); return os.path.join(current, entries[sel])
-                if ev.button == 3:  # Y = manual path input (anytime)
+                if ev.button == BTN["alt"]:  # Y = manual path input (anytime)
                     play_sfx('select')
                     typed = on_screen_keyboard("Enter path manually")
                     if typed:
@@ -1170,9 +1238,9 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
                             return typed
                         else:
                             play_sfx('error')
-                if ev.button == 4:  # L1 = toggle hidden files
+                if ev.button == BTN["shoulder_l"]:  # L1 = toggle hidden files
                     show_hidden = not show_hidden; sel = 0; scroll = 0; play_sfx('navigate')
-                if ev.button == 7:  # Start = cancel browser, return None
+                if ev.button == BTN["start"]:  # Start = cancel browser, return None
                     play_sfx('back'); return None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -1343,7 +1411,7 @@ def first_time_setup():
                     if ev.key == pygame.K_DOWN:
                         sel = min(1, sel + 1); play_sfx('navigate')
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     play_sfx('select'); waiting = False
                     use_auto = can_auto and sel == 0
             if ev.type == pygame.JOYHATMOTION:
@@ -1555,6 +1623,7 @@ def settings_menu(username=None):
         ("Cache Folder", "local_cache_dir"),
         ("Max Cached Games", "max_cached_games"),
         ("Theme Colors", "theme"),
+        ("Controller Mapping", "controller_map"),
         ("Back", "back"),
     ]
     sel = 0
@@ -1578,12 +1647,12 @@ def settings_menu(username=None):
                     if items[sel][1] == "back":
                         return
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     play_sfx('select')
                     _handle_setting(items[sel][1], username)
                     if items[sel][1] == "back":
                         return
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -1638,6 +1707,264 @@ def settings_menu(username=None):
         clock.tick(30)
 
 
+# ═══ Controller Mapping Submenu ══════════════════════════════
+
+def _capture_button(action_label):
+    """Wait for the user to hold a joystick button for 2 seconds.
+    Returns the button number, or None if cancelled.
+    Keyboard Escape always cancels (safety). Keyboard is never captured."""
+    held_button = None
+    hold_start = 0
+    HOLD_DURATION = 2.0
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            # Keyboard Escape always cancels (safety fallback)
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                play_sfx('back'); return None
+            # Joystick button pressed — start hold timer
+            if ev.type == pygame.JOYBUTTONDOWN:
+                held_button = ev.button
+                hold_start = now
+            # Joystick button released — reset if it was the held one
+            if ev.type == pygame.JOYBUTTONUP:
+                if ev.button == held_button:
+                    held_button = None
+
+        # Check if held long enough
+        if held_button is not None:
+            elapsed = now - hold_start
+            if elapsed >= HOLD_DURATION:
+                play_sfx('select')
+                return held_button
+            progress = elapsed / HOLD_DURATION
+        else:
+            progress = 0.0
+
+        # Draw
+        screen.fill(BG)
+        draw_header(f"Remap: {action_label}", "")
+
+        # Instruction
+        inst = F['md'].render("Hold a button for 2 seconds to assign", True, TXT)
+        screen.blit(inst, inst.get_rect(center=(W // 2, H // 3)))
+
+        # Show which button is being held
+        if held_button is not None:
+            btn_text = f"Holding: {btn_name(held_button)}"
+            bt = F['lg'].render(btn_text, True, HDR)
+            screen.blit(bt, bt.get_rect(center=(W // 2, H // 2 - scaled(10))))
+
+            # Progress bar
+            bar_w = scaled(300)
+            bar_h = scaled(20)
+            bar_x = (W - bar_w) // 2
+            bar_y = H // 2 + scaled(20)
+            pygame.draw.rect(screen, BAR_BG, (bar_x, bar_y, bar_w, bar_h), border_radius=scaled(4))
+            fill_w = int(bar_w * progress)
+            if fill_w > 0:
+                # Color transitions from accent to success
+                fill_color = _blend(ACCENT, SUCCESS, progress)
+                pygame.draw.rect(screen, fill_color, (bar_x, bar_y, fill_w, bar_h), border_radius=scaled(4))
+            pygame.draw.rect(screen, ACCENT, (bar_x, bar_y, bar_w, bar_h), 2, border_radius=scaled(4))
+
+            pct_text = f"{int(progress * 100)}%"
+            pct = F['sm'].render(pct_text, True, TXT)
+            screen.blit(pct, pct.get_rect(center=(W // 2, bar_y + bar_h + scaled(12))))
+        else:
+            wait_text = "Press and hold any button..."
+            wt = F['md'].render(wait_text, True, HINT)
+            pulse = 0.4 + 0.6 * abs(math.sin(now * 2.5))
+            wt.set_alpha(int(255 * pulse))
+            screen.blit(wt, wt.get_rect(center=(W // 2, H // 2)))
+
+        draw_hint_bar("[Keyboard Esc] Cancel")
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def controller_mapping_submenu():
+    """Controller remapping submenu with per-key and all-key reset."""
+    actions = list(BTN_LABELS.keys())  # ordered action keys
+    # Menu items: each action + Reset All + Back
+    RESET_ALL_IDX = len(actions)
+    BACK_IDX = len(actions) + 1
+    total_items = len(actions) + 2
+
+    sel = 0
+    last_joy = 0
+    scroll = 0
+    # How many action rows visible (leave room for Reset All + Back + header/footer)
+    max_visible = max(3, (H - scaled(130)) // scaled(44))
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return
+                if ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN:
+                    sel = min(total_items - 1, sel + 1); play_sfx('navigate')
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select')
+                    _handle_mapping_action(sel, actions)
+                if ev.key == pygame.K_DELETE or ev.key == pygame.K_BACKSPACE:
+                    # Per-key reset via keyboard
+                    if sel < len(actions):
+                        _reset_single_mapping(actions[sel])
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == BTN["confirm"]:
+                    play_sfx('select')
+                    _handle_mapping_action(sel, actions)
+                elif ev.button == BTN["back"]:
+                    play_sfx('back'); return
+                elif ev.button == BTN["extra"]:  # X = per-key reset
+                    if sel < len(actions):
+                        _reset_single_mapping(actions[sel])
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1: sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1: sel = min(total_items - 1, sel + 1); play_sfx('navigate')
+
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            ya = joy.get_axis(1)
+            if abs(ya) > 0.5:
+                if ya < -0.5: sel = max(0, sel - 1)
+                else: sel = min(total_items - 1, sel + 1)
+                play_sfx('navigate'); last_joy = now
+
+        # Auto-scroll
+        if sel < scroll:
+            scroll = sel
+        if sel >= scroll + max_visible:
+            scroll = sel - max_visible + 1
+
+        # Draw
+        screen.fill(BG)
+        draw_header("Controller Mapping", "[A] Remap   [X] Reset Key   [B] Back")
+
+        y = scaled(56)
+
+        for vi in range(max_visible):
+            idx = scroll + vi
+            if idx >= total_items:
+                break
+            is_sel = (idx == sel)
+            rect = pygame.Rect(scaled(16), y, W - scaled(32), scaled(38))
+
+            if is_sel:
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
+
+            if idx < len(actions):
+                # Action row
+                action = actions[idx]
+                label = BTN_LABELS[action]
+                current_btn = BTN[action]
+                default_btn = DEFAULT_BUTTON_MAP[action]
+                is_default = (current_btn == default_btn)
+
+                # Action name
+                lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
+                screen.blit(lbl, (rect.x + scaled(10), rect.y + scaled(4)))
+
+                # Current binding badge
+                badge_text = btn_name(current_btn)
+                badge_color = SUCCESS if is_default else HDR
+                badge = F['md_b'].render(badge_text, True, badge_color)
+                bx = rect.right - badge.get_width() - scaled(14)
+                screen.blit(badge, (bx, rect.y + scaled(4)))
+
+                # Modified indicator
+                if not is_default:
+                    mod = F['sm'].render("•", True, HINT)
+                    screen.blit(mod, (bx - scaled(14), rect.y + scaled(3)))
+
+            elif idx == RESET_ALL_IDX:
+                lbl = F['md_b' if is_sel else 'md'].render("Reset All to Default", True, DANGER if is_sel else HINT)
+                screen.blit(lbl, (rect.x + scaled(10), rect.y + scaled(4)))
+
+            elif idx == BACK_IDX:
+                lbl = F['md_b' if is_sel else 'md'].render("Back", True, TXT_SEL if is_sel else TXT)
+                screen.blit(lbl, (rect.x + scaled(10), rect.y + scaled(4)))
+
+            y += scaled(44)
+
+        # Scroll indicators
+        if scroll > 0:
+            arr = F['sm'].render("▲ more", True, HINT)
+            screen.blit(arr, arr.get_rect(center=(W // 2, scaled(50))))
+        if scroll + max_visible < total_items:
+            arr = F['sm'].render("▼ more", True, HINT)
+            screen.blit(arr, arr.get_rect(center=(W // 2, y + scaled(4))))
+
+        # Safety notice
+        safety = F['sm'].render("Keyboard keys always work as fallback", True, TXT_DIM)
+        screen.blit(safety, safety.get_rect(center=(W // 2, H - scaled(38))))
+
+        draw_hint_bar("[A] Remap   [X] Reset This Key   [B] Back")
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _handle_mapping_action(sel, actions):
+    """Handle selection in the controller mapping submenu."""
+    if sel < len(actions):
+        # Remap this action
+        action = actions[sel]
+        label = BTN_LABELS[action]
+        result = _capture_button(label)
+        if result is not None:
+            # Check for conflicts
+            conflict_action = None
+            for k, v in BTN.items():
+                if v == result and k != action:
+                    conflict_action = k
+            if conflict_action:
+                # Swap: give the conflicting action our old button
+                old_btn = BTN[action]
+                msg = (f"{btn_name(result)} is already used by "
+                       f"{BTN_LABELS[conflict_action]}.\n"
+                       f"Swap bindings?")
+                if confirm_dialog(f"Swap {btn_name(result)}? "
+                                  f"{BTN_LABELS[conflict_action]} will become {btn_name(old_btn)}"):
+                    BTN[conflict_action] = old_btn
+                    BTN[action] = result
+                    save_button_map()
+                # If declined, do nothing
+            else:
+                BTN[action] = result
+                save_button_map()
+
+    elif sel == len(actions):  # Reset All
+        if confirm_dialog("Reset ALL controller buttons to default?"):
+            for k in DEFAULT_BUTTON_MAP:
+                BTN[k] = DEFAULT_BUTTON_MAP[k]
+            save_button_map()
+
+    else:  # Back
+        return
+
+
+def _reset_single_mapping(action):
+    """Reset a single action to its default mapping with confirmation."""
+    default = DEFAULT_BUTTON_MAP[action]
+    current = BTN[action]
+    if current == default:
+        return  # Already default
+    label = BTN_LABELS[action]
+    if confirm_dialog(f"Reset {label} to {btn_name(default)}?"):
+        BTN[action] = default
+        save_button_map()
+
+
 # ═══ Theme / Color Picker Submenu ═══════════════════════════════
 
 def _rgb_to_hsv(r, g, b):
@@ -1681,10 +2008,10 @@ def color_slider(label, color_rgb):
                 if ev.key == pygame.K_RIGHT:
                     channels[sel] = min(maxes[sel], channels[sel] + 1)
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     play_sfx('select')
                     return _hsv_to_rgb(channels[0], channels[1], channels[2])
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -1826,7 +2153,7 @@ def theme_submenu():
                             apply_theme(theme)
                             save_theme_to_config(theme)
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     play_sfx('select')
                     key = items[sel][1]
                     if key == "back":
@@ -1847,7 +2174,7 @@ def theme_submenu():
                             theme[key] = list(result)
                             apply_theme(theme)
                             save_theme_to_config(theme)
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -1929,10 +2256,10 @@ def preset_picker():
                     play_sfx('select')
                     return dict(THEME_PRESETS[names[sel]])
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     play_sfx('select')
                     return dict(THEME_PRESETS[names[sel]])
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back')
                     # Restore previous theme before exiting
                     load_theme_from_config()
@@ -2031,6 +2358,9 @@ def _handle_setting(key, username=None):
     elif key == "theme":
         theme_submenu()
         return  # Theme saves itself directly to global config
+    elif key == "controller_map":
+        controller_mapping_submenu()
+        return  # Mapping saves itself directly to global config
 
     # Persist changes
     if username:
@@ -2103,7 +2433,7 @@ def evict_cached_picker():
                         save_cache_manifest(manifest)
                         return True
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     play_sfx('select')
                     name = entries[sel]
                     if confirm_dialog(f"Delete {name}?"):
@@ -2113,7 +2443,7 @@ def evict_cached_picker():
                         del manifest[name]
                         save_cache_manifest(manifest)
                         return True
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return False
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -2224,7 +2554,7 @@ def extract_and_launch(game_file, user, card):
                         for ev in pygame.event.get():
                             if ev.type == pygame.QUIT:
                                 pygame.quit(); sys.exit()
-                            if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
+                            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
                                 shutil.rmtree(dest, ignore_errors=True)
                                 return False
             except Exception:
@@ -2252,7 +2582,7 @@ def extract_and_launch(game_file, user, card):
                     for ev in pygame.event.get():
                         if ev.type == pygame.QUIT:
                             proc.kill(); pygame.quit(); sys.exit()
-                        if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
+                        if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
                             proc.kill()
                             shutil.rmtree(dest, ignore_errors=True)
                             return False
@@ -2363,7 +2693,7 @@ def screen_user_picker():
                     else:
                         play_sfx('select'); return users[sel]
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     if sel == len(items) - 1:
                         play_sfx('select')
                         name = on_screen_keyboard("Enter Username")
@@ -2374,7 +2704,7 @@ def screen_user_picker():
                             return name
                     else:
                         play_sfx('select'); return users[sel]
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -2446,7 +2776,7 @@ def screen_memcard_picker(user):
                             play_sfx('select')
                             delete_card(user, cards[sel])
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == BTN["confirm"]:
                     if sel == len(items) - 1:
                         play_sfx('select')
                         name = on_screen_keyboard("Card Name")
@@ -2454,9 +2784,9 @@ def screen_memcard_picker(user):
                             create_card(user, name)
                     elif sel < len(cards):
                         play_sfx('select'); return cards[sel]
-                if ev.button == 1:
+                if ev.button == BTN["back"]:
                     play_sfx('back'); return None
-                if ev.button == 2 and sel < len(cards) and len(cards) > 1:
+                if ev.button == BTN["extra"] and sel < len(cards) and len(cards) > 1:
                     if confirm_dialog(f"Delete {cards[sel]}?"):
                         play_sfx('select')
                         delete_card(user, cards[sel])
@@ -2525,9 +2855,9 @@ def screen_game_picker(user, card):
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
                     play_sfx('back'); return False
                 if ev.type == pygame.JOYBUTTONDOWN:
-                    if ev.button == 1:
+                    if ev.button == BTN["back"]:
                         play_sfx('back'); return False
-                    if ev.button == 7:
+                    if ev.button == BTN["start"]:
                         play_sfx('select'); settings_menu(user); reload_games()
             clock.tick(30)
             continue
@@ -2557,16 +2887,16 @@ def screen_game_picker(user, card):
                 if ev.key == pygame.K_F1:
                     play_sfx('select'); settings_menu(user); reload_games()
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0 and filtered:  # A = launch
+                if ev.button == BTN["confirm"] and filtered:  # A = launch
                     play_sfx('launch')
                     result = extract_and_launch(filtered[sel], user, card)
                     if result:
                         return True
-                if ev.button == 1:  # B = back
+                if ev.button == BTN["back"]:  # B = back
                     play_sfx('back'); return False
-                if ev.button == 7:  # Start = settings
+                if ev.button == BTN["start"]:  # Start = settings
                     play_sfx('select'); settings_menu(user); reload_games()
-                if ev.button == 6:  # Select = search
+                if ev.button == BTN["select"]:  # Select = search
                     play_sfx('select')
                     q = on_screen_keyboard("Search Games")
                     search_text = q if q else ""
