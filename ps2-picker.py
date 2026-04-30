@@ -2,10 +2,12 @@
 """PS2 Games Launcher with User Profiles and Memory Card Management
    Purple/Gold themed, 640x480 optimized, controller-driven"""
 
-import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math
+import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
-os.environ['DISPLAY'] = ':0'
+IS_WINDOWS = platform.system() == 'Windows'
+if not IS_WINDOWS:
+    os.environ.setdefault('DISPLAY', ':0')
 warnings.filterwarnings('ignore')
 import pygame
 
@@ -107,15 +109,23 @@ def reload_games():
 # ═══ Memcard directory detection ════════════════════════════════
 
 def find_memcard_dir():
-    for d in [
-        os.path.expanduser("~/.config/retroarch/system/pcsx2/memcards"),
-        os.path.expanduser("~/.config/retroarch/saves/pcsx2/memcards"),
-    ]:
+    if IS_WINDOWS:
+        candidates = [
+            os.path.join(os.environ.get('APPDATA', ''), 'RetroArch', 'system', 'pcsx2', 'memcards'),
+            os.path.join(os.environ.get('APPDATA', ''), 'RetroArch', 'saves', 'pcsx2', 'memcards'),
+        ]
+        fallback = candidates[0]
+    else:
+        candidates = [
+            os.path.expanduser("~/.config/retroarch/system/pcsx2/memcards"),
+            os.path.expanduser("~/.config/retroarch/saves/pcsx2/memcards"),
+        ]
+        fallback = candidates[0]
+    for d in candidates:
         if os.path.isdir(d):
             return d
-    default = os.path.expanduser("~/.config/retroarch/system/pcsx2/memcards")
-    os.makedirs(default, exist_ok=True)
-    return default
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
 
 
 MEMCARD_ACTIVE = find_memcard_dir()
@@ -318,17 +328,29 @@ def strip_ext(name):
 
 # ═══ Archive helpers ════════════════════════════════════════════
 
+def _find_7z():
+    """Locate 7z binary across platforms."""
+    if IS_WINDOWS:
+        for p in [
+            os.path.join(os.environ.get('PROGRAMFILES', ''), '7-Zip', '7z.exe'),
+            os.path.join(os.environ.get('PROGRAMFILES(X86)', ''), '7-Zip', '7z.exe'),
+            '7z.exe', '7z',
+        ]:
+            if shutil.which(p) or os.path.isfile(p):
+                return p
+    return shutil.which('7z') or '7z'
+
+
 def get_archive_size(path):
     lower = path.lower()
     try:
         if lower.endswith('.zip'):
-            r = subprocess.run(["unzip", "-l", path], capture_output=True, text=True)
-            for line in reversed(r.stdout.splitlines()):
-                parts = line.split()
-                if parts and parts[0].isdigit():
-                    return int(parts[0])
+            # Use Python zipfile (cross-platform)
+            with zipfile.ZipFile(path, 'r') as zf:
+                return sum(info.file_size for info in zf.infolist())
         elif lower.endswith('.7z'):
-            r = subprocess.run(["7z", "l", path], capture_output=True, text=True)
+            cmd_7z = _find_7z()
+            r = subprocess.run([cmd_7z, "l", path], capture_output=True, text=True)
             for line in reversed(r.stdout.splitlines()):
                 parts = line.split()
                 if parts and parts[0].isdigit() and len(parts) >= 3:
@@ -362,12 +384,22 @@ def init_display():
     scr = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     w, h = scr.get_size()
 
+    # Pick a font that exists on this platform
+    font_name = None
+    for candidate in ["DejaVu Sans", "Segoe UI", "Arial", "Helvetica", None]:
+        if candidate is None:
+            font_name = None  # pygame default
+            break
+        if candidate.lower().replace(' ', '') in [f.lower().replace(' ', '') for f in pygame.font.get_fonts()]:
+            font_name = candidate
+            break
+
     fonts = {
-        'sm': pygame.font.SysFont("DejaVu Sans", 11),
-        'md': pygame.font.SysFont("DejaVu Sans", 16),
-        'md_b': pygame.font.SysFont("DejaVu Sans", 16, bold=True),
-        'lg': pygame.font.SysFont("DejaVu Sans", 20, bold=True),
-        'xl': pygame.font.SysFont("DejaVu Sans", 22, bold=True),
+        'sm': pygame.font.SysFont(font_name, 11),
+        'md': pygame.font.SysFont(font_name, 16),
+        'md_b': pygame.font.SysFont(font_name, 16, bold=True),
+        'lg': pygame.font.SysFont(font_name, 20, bold=True),
+        'xl': pygame.font.SysFont(font_name, 22, bold=True),
     }
 
     joy = None
@@ -822,7 +854,15 @@ def volume_slider(prompt="Volume", current_vol=0.5, muted=False):
 
 # ═══ File Browser ═══════════════════════════════════════════════
 
-def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
+def _platform_root():
+    """Return filesystem root for the current platform."""
+    if IS_WINDOWS:
+        # Return the drive where Windows is installed
+        return os.environ.get('SystemDrive', 'C:') + os.sep
+    return "/"
+
+
+def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
     """Controller-driven file/folder browser.
        mode='folder' = select folders, mode='file' = select files.
        A = enter folder (or select file in file mode)
@@ -831,6 +871,8 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
        Y = type a path manually (works anytime)
        L1 = toggle hidden files/folders
        Returns selected path string or None if cancelled."""
+    if start_path is None:
+        start_path = os.path.expanduser("~")
     current = os.path.expanduser(start_path)
     if not os.path.isdir(current):
         current = os.path.expanduser("~")
@@ -1083,12 +1125,21 @@ def first_time_setup():
 
     # -- Step 3: Core path (required) --
     while True:
-        draw_center_msg("Step 2 of 5", "Locate your RetroArch PS2 core (.so file)",
-                        "Tip: press [L1] to show hidden folders like .config")
+        if IS_WINDOWS:
+            core_hint = "Locate your RetroArch PS2 core (.dll file)"
+            tip_hint = "Tip: usually in Program Files/RetroArch/cores"
+        else:
+            core_hint = "Locate your RetroArch PS2 core (.so file)"
+            tip_hint = "Tip: press [L1] to show hidden folders like .config"
+        draw_center_msg("Step 2 of 5", core_hint, tip_hint)
         time.sleep(0.8)
-        default_cores = os.path.expanduser("~/.config/retroarch/cores")
+        if IS_WINDOWS:
+            default_cores = os.path.join(os.environ.get('PROGRAMFILES', ''), 'RetroArch', 'cores')
+        else:
+            default_cores = os.path.expanduser("~/.config/retroarch/cores")
         core_start = default_cores if os.path.isdir(default_cores) else os.path.expanduser("~")
-        core_path = file_browser("Select PS2 core file (.so)", start_path=core_start, mode="file")
+        core_ext = ".dll" if IS_WINDOWS else ".so"
+        core_path = file_browser(f"Select PS2 core file ({core_ext})", start_path=core_start, mode="file")
         if core_path and os.path.isfile(core_path):
             cfg["core_path"] = core_path
             break
@@ -1269,7 +1320,8 @@ def _handle_setting(key, username=None):
             reload_games()
     elif key == "core_path":
         start = os.path.dirname(active_cfg.get("core_path", "")) or "/"
-        result = file_browser("Select PS2 core file (.so)", start_path=start, mode="file")
+        core_ext = ".dll" if IS_WINDOWS else ".so"
+        result = file_browser(f"Select PS2 core file ({core_ext})", start_path=start, mode="file")
         if result:
             active_cfg["core_path"] = result
     elif key == "local_cache_dir":
@@ -1462,37 +1514,60 @@ def extract_and_launch(game_file, user, card):
 
     if lower.endswith(('.zip', '.7z')):
         archive_size = get_archive_size(full_path)
+
         if lower.endswith('.zip'):
-            cmd = ["unzip", "-o", full_path, "-d", dest]
+            # Use Python zipfile for cross-platform extraction
+            try:
+                with zipfile.ZipFile(full_path, 'r') as zf:
+                    members = zf.infolist()
+                    total = len(members)
+                    for idx, member in enumerate(members):
+                        zf.extract(member, dest)
+                        now = time.time()
+                        pct = (idx + 1) / total if total > 0 else 0
+                        draw_progress(game_file, min(pct, 0.99), "Extracting")
+                        for ev in pygame.event.get():
+                            if ev.type == pygame.QUIT:
+                                pygame.quit(); sys.exit()
+                            if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
+                                shutil.rmtree(dest, ignore_errors=True)
+                                return False
+            except Exception:
+                play_sfx('error')
+                draw_progress(game_file, 0, "Zip Error")
+                time.sleep(2)
+                shutil.rmtree(dest, ignore_errors=True)
+                return False
         else:
-            cmd = ["7z", "x", full_path, f"-o{dest}", "-y"]
+            # .7z — use external 7z command
+            cmd_7z = _find_7z()
+            cmd = [cmd_7z, "x", full_path, f"-o{dest}", "-y"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            last_update = 0
+            while True:
+                line = proc.stdout.readline()
+                if not line and proc.poll() is not None:
+                    break
+                now = time.time()
+                if now - last_update > 0.2:
+                    cur_size = get_dir_size(dest)
+                    pct = cur_size / archive_size if archive_size > 0 else 0
+                    draw_progress(game_file, min(pct, 0.99), "Extracting")
+                    last_update = now
+                    for ev in pygame.event.get():
+                        if ev.type == pygame.QUIT:
+                            proc.kill(); pygame.quit(); sys.exit()
+                        if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
+                            proc.kill()
+                            shutil.rmtree(dest, ignore_errors=True)
+                            return False
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        last_update = 0
-        while True:
-            line = proc.stdout.readline()
-            if not line and proc.poll() is not None:
-                break
-            now = time.time()
-            if now - last_update > 0.2:
-                cur_size = get_dir_size(dest)
-                pct = cur_size / archive_size if archive_size > 0 else 0
-                draw_progress(game_file, min(pct, 0.99), "Extracting")
-                last_update = now
-                for ev in pygame.event.get():
-                    if ev.type == pygame.QUIT:
-                        proc.kill(); pygame.quit(); sys.exit()
-                    if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
-                        proc.kill()
-                        shutil.rmtree(dest, ignore_errors=True)
-                        return False
-
-        if proc.returncode != 0:
-            play_sfx('error')
-            draw_progress(game_file, 0, "Error")
-            time.sleep(2)
-            shutil.rmtree(dest, ignore_errors=True)
-            return False
+            if proc.returncode != 0:
+                play_sfx('error')
+                draw_progress(game_file, 0, "Error")
+                time.sleep(2)
+                shutil.rmtree(dest, ignore_errors=True)
+                return False
     elif lower.endswith(('.iso', '.chd')):
         dest = os.path.dirname(full_path)
 
@@ -1526,6 +1601,19 @@ def extract_and_launch(game_file, user, card):
     return True
 
 
+def _find_retroarch():
+    """Locate retroarch binary across platforms."""
+    if IS_WINDOWS:
+        for p in [
+            os.path.join(os.environ.get('PROGRAMFILES', ''), 'RetroArch', 'retroarch.exe'),
+            os.path.join(os.environ.get('PROGRAMFILES(X86)', ''), 'RetroArch', 'retroarch.exe'),
+            'retroarch.exe', 'retroarch',
+        ]:
+            if shutil.which(p) or os.path.isfile(p):
+                return p
+    return shutil.which('retroarch') or 'retroarch'
+
+
 def _launch_retroarch(game_path, core):
     """Launch RetroArch with the given game and core."""
     if not core or not os.path.exists(core):
@@ -1533,7 +1621,8 @@ def _launch_retroarch(game_path, core):
         draw_center_msg("Error", "RetroArch core not found!", "Check Settings > RetroArch Core")
         time.sleep(2)
         return
-    cmd = ["retroarch", "-L", core, game_path]
+    ra = _find_retroarch()
+    cmd = [ra, "-L", core, game_path]
     try:
         subprocess.run(cmd)
     except Exception as e:
