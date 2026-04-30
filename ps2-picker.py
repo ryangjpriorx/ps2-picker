@@ -1269,7 +1269,7 @@ def show_splash():
 
         sub_t = max(0.0, min((t - 0.2) / 0.4, 1.0))
         sub_color = lerp_color(BG, HINT, sub_t)
-        ss = F['md'].render("Console Revival Repair Services", True, sub_color)
+        ss = F['md'].render("Goon Squad Canada", True, sub_color)
         screen.blit(ss, ss.get_rect(center=(W // 2, H // 2 + 10)))
 
         line_t = max(0.0, min((t - 0.3) / 0.4, 1.0))
