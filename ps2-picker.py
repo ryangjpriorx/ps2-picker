@@ -212,7 +212,7 @@ def init_sounds():
         return
     SFX = {
         'navigate': _gen_tone(800, 50, 0.12),
-        'select':   _gen_tone(700, 90, 0.18),        # Lowered from 1200
+        'select':   _gen_tone(440, 60, 0.10),        # Warm A4, short and soft
         'back':     _gen_sweep(600, 350, 90, 0.18),
         'error':    _gen_tone(280, 180, 0.25),
         'launch':   _gen_sweep(500, 900, 250, 0.20),  # Lowered peak from 1400
