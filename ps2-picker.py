@@ -1,39 +1,72 @@
 #!/usr/bin/env python3
-"""PS2 Games Launcher with User Profiles and Memory Card Management
-   Purple/Gold themed, 640x480 optimized, controller-driven"""
+"""PS2 Picker — A controller-driven PS2 game launcher.
 
+Features:
+    - User profiles with independent memory card save management
+    - Automatic game extraction from ZIP/7z archives with LRU cache
+    - Customizable theme colors (presets + per-channel HSV editing)
+    - Remappable controller buttons with safety fallbacks
+    - Resolution-aware UI scaling (reference: 480p)
+    - Procedural sound effects (no external audio files needed)
+    - First-time setup wizard with auto-detection of RetroArch/cores
+    - On-screen keyboard and file browser for headless/handheld use
+
+Config:  ~/.ps2-picker/config.json   (global settings, theme, button map)
+Users:   ~/ps2-users/<name>/          (per-profile cards + meta)
+Cache:   ~/ps2-cache/                 (extracted game files + manifest)
+
+Usage:
+    python3 ps2-picker.py              Launch normally
+    python3 ps2-picker.py --check-deps Run dependency checker first
+"""
+
+# ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
 
+# Suppress pygame welcome banner and warnings before import
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 IS_WINDOWS = platform.system() == 'Windows'
 if not IS_WINDOWS:
+    # Ensure X11 display is set for headless Linux (e.g. Moonlight streaming)
     os.environ.setdefault('DISPLAY', ':0')
 warnings.filterwarnings('ignore')
 
 import pygame
 
 # ═══ Application Paths ══════════════════════════════════════════
+# All user data lives under these directories. APP_DIR stores global
+# config (theme, button map, settings). USERS_DIR holds per-profile
+# memory card snapshots and metadata.
 APP_DIR = os.path.expanduser("~/.ps2-picker")
 GLOBAL_CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 USERS_DIR = os.path.expanduser("~/ps2-users")
+
+# Recognised ROM archive extensions (browsed in the file picker)
 EXTS = ('.zip', '.7z', '.iso', '.chd')
+# Playable disc image extensions (found inside extracted archives)
 GAME_EXTS = ('iso', 'bin', 'chd', 'cue')
+# PCSX2 memory card filenames (slot 1 and slot 2)
 MEMCARD_FILES = ('Mcd001.ps2', 'Mcd002.ps2')
 
 # ═══ Default Configuration ══════════════════════════════════════
+# These defaults are merged with any saved config on load, so new
+# keys added in future versions automatically get sensible values.
 DEFAULT_CONFIG = {
-    "rom_dir": "",
-    "local_cache_dir": os.path.expanduser("~/ps2-cache"),
-    "max_cached_games": 3,
-    "core_path": "",
-    "volume": 0.5,
-    "muted": False,
-    "setup_complete": False,
+    "rom_dir": "",                                      # Path to PS2 ROM archives
+    "local_cache_dir": os.path.expanduser("~/ps2-cache"),# Extracted game cache directory
+    "max_cached_games": 3,                               # LRU cache size limit
+    "core_path": "",                                     # RetroArch PS2 core (.so/.dll)
+    "volume": 0.5,                                       # UI sound volume (0.0–1.0)
+    "muted": False,                                      # Global mute toggle
+    "setup_complete": False,                              # First-time wizard completed?
 }
 
 # ═══ Configuration System ══════════════════════════════════════
+# active_cfg is the runtime config dict — a merge of global config
+# and any per-user overrides. It's the single source of truth for
+# all settings while the app is running.
 active_cfg = dict(DEFAULT_CONFIG)
-games = []
+games = []  # Current game list (sorted: cached first, then alpha)
 
 
 def load_global_config():
@@ -109,9 +142,12 @@ def reload_games():
         games = []
 
 
-# ═══ Memcard directory detection ════════════════════════════════
+# ═══ Memcard Directory Detection ════════════════════════════════
+# PCSX2 (via RetroArch) stores memory cards in a system-specific
+# location. We check common paths and create the fallback if needed.
 
 def find_memcard_dir():
+    """Locate RetroArch's PCSX2 memcard directory, creating fallback if needed."""
     if IS_WINDOWS:
         candidates = [
             os.path.join(os.environ.get('APPDATA', ''), 'RetroArch', 'system', 'pcsx2', 'memcards'),
@@ -134,6 +170,10 @@ def find_memcard_dir():
 MEMCARD_ACTIVE = find_memcard_dir()
 
 # ═══ Theme System ═══════════════════════════════════════════════
+# The theme is defined by 4 base colors: bg, accent, highlight, text.
+# All 15 UI colors are derived automatically via apply_theme().
+# Theme is saved in config.json under the "theme" key and shared
+# with the pre-launcher (ps2-checker.py) so both apps match.
 import colorsys
 
 # Default theme (Royal Purple & Gold)
@@ -156,19 +196,24 @@ THEME_PRESETS = {
 }
 
 
-def _clamp(v): return max(0, min(255, int(v)))
+def _clamp(v):
+    """Clamp a value to the 0–255 RGB range."""
+    return max(0, min(255, int(v)))
 
 def _blend(c1, c2, t):
     """Blend two RGB tuples by factor t (0.0=c1, 1.0=c2)."""
     return tuple(_clamp(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
 
 def _lighten(c, amt=40):
+    """Lighten an RGB color by adding a flat amount to each channel."""
     return tuple(_clamp(v + amt) for v in c)
 
 def _darken(c, amt=40):
+    """Darken an RGB color by subtracting a flat amount from each channel."""
     return tuple(_clamp(v - amt) for v in c)
 
 def _dim(c, factor=0.6):
+    """Dim an RGB color by multiplying each channel by a factor (0.0–1.0)."""
     return tuple(_clamp(v * factor) for v in c)
 
 
@@ -231,9 +276,12 @@ def get_current_theme():
 load_theme_from_config()
 
 # ═══ Input Mapping System ═══════════════════════════════════════
-# Maps logical actions to joystick button numbers.
-# Keyboard keys are NEVER remapped — they always work as a safety fallback.
-# If controller binds are broken, keyboard Escape/Enter/arrows still work.
+# Maps logical actions ("confirm", "back", etc.) to joystick button
+# numbers. Users can remap these via Settings > Controller Mapping.
+#
+# SAFETY: Keyboard keys are NEVER remapped. Even if all controller
+# binds are broken, Escape/Enter/arrows/Space always work. This
+# prevents users from locking themselves out on headless devices.
 
 DEFAULT_BUTTON_MAP = {
     "confirm":    0,   # A — select, enter, launch
@@ -302,7 +350,7 @@ os.makedirs(APP_DIR, exist_ok=True)
 os.makedirs(USERS_DIR, exist_ok=True)
 
 
-# ═══ Color / animation helpers ══════════════════════════════════
+# ═══ Color & Animation Helpers ══════════════════════════════════
 
 def lerp_color(c1, c2, t):
     """Linearly interpolate between two RGB colors."""
@@ -314,7 +362,9 @@ def lerp_color(c1, c2, t):
     )
 
 
-# ═══ Procedural sound effects ═══════════════════════════════════
+# ═══ Procedural Sound Effects ═══════════════════════════════════
+# All UI sounds are generated at runtime from sine waves — no external
+# audio files required. Each sound is a short pygame.mixer.Sound object.
 SFX = {}
 
 
@@ -382,8 +432,17 @@ def play_sfx(name):
 
 
 # ═══ User & Memory Card Management ═════════════════════════════
+# Each user profile lives in ~/ps2-users/<name>/ with:
+#   cards/<card_name>/   — memory card snapshots (Mcd001.ps2, Mcd002.ps2)
+#   backup/              — automatic backup of last loaded card
+#   meta.json            — last-used card, per-user settings overrides
+#
+# Before launching a game, the selected card's files are copied into
+# RetroArch's active memcard directory. After the game exits, the
+# active memcards are saved back to the card slot.
 
 def get_users():
+    """Return sorted list of user profile directory names."""
     if not os.path.isdir(USERS_DIR):
         return []
     return sorted([d for d in os.listdir(USERS_DIR)
@@ -392,6 +451,7 @@ def get_users():
 
 
 def create_user(name):
+    """Create a new user profile directory with a default card slot."""
     udir = os.path.join(USERS_DIR, name)
     os.makedirs(os.path.join(udir, "cards", "Card 1"), exist_ok=True)
     os.makedirs(os.path.join(udir, "backup"), exist_ok=True)
@@ -399,6 +459,7 @@ def create_user(name):
 
 
 def get_user_meta(name):
+    """Load a user's metadata (last card, settings overrides) from meta.json."""
     p = os.path.join(USERS_DIR, name, "meta.json")
     if os.path.exists(p):
         try:
@@ -410,12 +471,14 @@ def get_user_meta(name):
 
 
 def save_user_meta(name, meta):
+    """Persist a user's metadata dict to meta.json."""
     p = os.path.join(USERS_DIR, name, "meta.json")
     with open(p, 'w') as f:
         json.dump(meta, f, indent=2)
 
 
 def get_cards(user):
+    """Return sorted list of memory card slot names for a user (last-used first)."""
     cards_dir = os.path.join(USERS_DIR, user, "cards")
     if not os.path.isdir(cards_dir):
         return []
@@ -428,16 +491,22 @@ def get_cards(user):
 
 
 def create_card(user, name):
+    """Create an empty memory card slot directory for a user."""
     os.makedirs(os.path.join(USERS_DIR, user, "cards", name), exist_ok=True)
 
 
 def delete_card(user, name):
+    """Permanently remove a memory card slot and its save data."""
     d = os.path.join(USERS_DIR, user, "cards", name)
     if os.path.isdir(d):
         shutil.rmtree(d)
 
 
 def load_memcard(user, card):
+    """Copy a user's saved memcard files into RetroArch's active directory.
+
+    Also creates a backup of whatever is currently active before overwriting.
+    """
     card_dir = os.path.join(USERS_DIR, user, "cards", card)
     backup_dir = os.path.join(USERS_DIR, user, "backup")
     os.makedirs(backup_dir, exist_ok=True)
@@ -459,6 +528,7 @@ def load_memcard(user, card):
 
 
 def save_memcard(user, card):
+    """Copy RetroArch's active memcard files back into the user's card slot."""
     card_dir = os.path.join(USERS_DIR, user, "cards", card)
     os.makedirs(card_dir, exist_ok=True)
     for f in MEMCARD_FILES:
@@ -468,16 +538,15 @@ def save_memcard(user, card):
             shutil.copy2(src, dst)
 
 
-# ═══ ROM list ═══════════════════════════════════════════════════
+# ═══ ROM List & Archive Helpers ═════════════════════════════════════
 
 def strip_ext(name):
+    """Remove a recognized archive extension (.zip, .7z, etc.) from a filename."""
     for e in EXTS:
         if name.lower().endswith(e):
             return name[:-len(e)]
     return name
 
-
-# ═══ Archive helpers ════════════════════════════════════════════
 
 def _find_7z():
     """Locate 7z binary across platforms."""
@@ -493,6 +562,7 @@ def _find_7z():
 
 
 def get_archive_size(path):
+    """Return uncompressed size in bytes of a .zip or .7z archive."""
     lower = path.lower()
     try:
         if lower.endswith('.zip'):
@@ -512,6 +582,7 @@ def get_archive_size(path):
 
 
 def get_dir_size(d):
+    """Recursively sum the size of all files in a directory tree."""
     total = 0
     try:
         for dp, _, fns in os.walk(d):
@@ -525,9 +596,7 @@ def get_dir_size(d):
     return total
 
 
-# ═══ Pygame setup ═══════════════════════════════════════════════
-
-# ═══ Resolution scaling ═════════════════════════════════════════
+# ═══ Display Initialization & Scaling ═══════════════════════════
 # Reference resolution is 480p. Everything scales relative to that.
 REF_H = 480
 UI_SCALE = 1.0  # Updated at init_display()
@@ -591,6 +660,7 @@ DPAD_DELAY = 180
 # ═══ Drawing helpers ════════════════════════════════════════════
 
 def truncate(text, font, max_w):
+    """Shorten text with '...' suffix so it fits within max_w pixels."""
     if font.size(text)[0] <= max_w:
         return text
     while len(text) > 0 and font.size(text + "...")[0] > max_w:
@@ -609,6 +679,7 @@ def draw_hint_bar(text):
 
 
 def draw_header(title, hint_text=None, count_text=None):
+    """Draw the screen header bar with title, optional hint, and item count."""
     t = F['lg'].render(title, True, HDR)
     screen.blit(t, (scaled(12), scaled(6)))
     if count_text:
@@ -644,6 +715,7 @@ def draw_list(items, sel_idx, scroll, colors=None):
 
 
 def draw_center_msg(top_text, mid_text="", bot_text=""):
+    """Draw a centered message screen (used for loading, empty states, etc.)."""
     screen.fill(BG)
     if top_text:
         s = F['xl'].render(top_text, True, HDR)
@@ -657,6 +729,7 @@ def draw_center_msg(top_text, mid_text="", bot_text=""):
 
 
 def draw_progress(game_name, progress, status="Extracting"):
+    """Draw a full-screen progress bar (used during game extraction)."""
     screen.fill(BG)
     s = F['xl'].render(status, True, HDR)
     screen.blit(s, s.get_rect(center=(W // 2, H // 6)))
@@ -861,7 +934,9 @@ def confirm_dialog(message):
                 last_joy = now
 
         screen.fill(BG)
-        ms = F['lg'].render(message, True, HDR)
+        # Truncate long messages to fit screen width
+        display_msg = truncate(message, F['lg'], W - scaled(40))
+        ms = F['lg'].render(display_msg, True, HDR)
         screen.blit(ms, ms.get_rect(center=(W // 2, H // 3)))
         for i, label in enumerate(["Yes", "No"]):
             bx = W // 2 + (i * scaled(120) - scaled(60))
@@ -1692,7 +1767,8 @@ def settings_menu(username=None):
             lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
             screen.blit(lbl, (rect.x + scaled(12), rect.y + scaled(4)))
 
-            if key not in ("back",):
+            # Show current value for editable settings (skip submenu-only items)
+            if key not in ("back", "theme", "controller_map"):
                 val = active_cfg.get(key, "")
                 if key == "volume":
                     if active_cfg.get("muted", False):
@@ -1705,6 +1781,10 @@ def settings_menu(username=None):
                     val_str = truncate(str(val), F['sm'], W // 2 - scaled(20)) if val else "(not set)"
                 vs = F['sm'].render(val_str, True, ACCENT if is_sel else TXT_DIM)
                 screen.blit(vs, (rect.right - vs.get_width() - scaled(12), rect.y + scaled(10)))
+            elif key in ("theme", "controller_map"):
+                # Show a chevron to indicate submenu
+                chev = F['md'].render("\u203A", True, ACCENT if is_sel else TXT_DIM)
+                screen.blit(chev, (rect.right - chev.get_width() - scaled(12), rect.y + scaled(4)))
 
             y += scaled(44)
 
@@ -1974,12 +2054,14 @@ def _reset_single_mapping(action):
 # ═══ Theme / Color Picker Submenu ═══════════════════════════════
 
 def _rgb_to_hsv(r, g, b):
+    """Convert RGB (0–255 each) to HSV (H:0–360, S:0–100, V:0–100)."""
     h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
     return int(h * 360), int(s * 100), int(v * 100)
 
 def _hsv_to_rgb(h, s, v):
+    """Convert HSV (H:0-360, S:0-100, V:0-100) to RGB (0-255 each)."""
     r, g, b = colorsys.hsv_to_rgb(h / 360, s / 100, v / 100)
-    return _clamp(r * 255), _clamp(g * 255), _clamp(v * 255)
+    return _clamp(r * 255), _clamp(g * 255), _clamp(b * 255)
 
 
 def color_slider(label, color_rgb):
@@ -2251,7 +2333,9 @@ def preset_picker():
                 pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); return None
+                    play_sfx('back')
+                    load_theme_from_config()  # Restore previous theme
+                    return None
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                     apply_theme(THEME_PRESETS[names[sel]])  # Live preview
@@ -2384,6 +2468,7 @@ def _handle_setting(key, username=None):
 # ═══ Cache Management ══════════════════════════════════════════
 
 def load_cache_manifest():
+    """Load the JSON manifest tracking which games are currently cached."""
     cache_dir = active_cfg.get("local_cache_dir", os.path.expanduser("~/ps2-cache"))
     p = os.path.join(cache_dir, "manifest.json")
     if os.path.exists(p):
@@ -2396,6 +2481,7 @@ def load_cache_manifest():
 
 
 def save_cache_manifest(manifest):
+    """Write the cache manifest dict to disk."""
     cache_dir = active_cfg.get("local_cache_dir", os.path.expanduser("~/ps2-cache"))
     os.makedirs(cache_dir, exist_ok=True)
     with open(os.path.join(cache_dir, "manifest.json"), 'w') as f:
@@ -2837,6 +2923,8 @@ def screen_game_picker(user, card):
     scroll = 0
     last_joy_time = 0
     search_text = ""
+    # Cache the manifest lookup so we don't hit disk every frame
+    cached_keys = set(load_cache_manifest().keys())
 
     while True:
         # Filter games
@@ -2888,20 +2976,24 @@ def screen_game_picker(user, card):
                 if ev.key in (pygame.K_RETURN, pygame.K_SPACE) and filtered:
                     play_sfx('launch')
                     result = extract_and_launch(filtered[sel], user, card)
+                    cached_keys = set(load_cache_manifest().keys())
                     if result:
                         return True
                 if ev.key == pygame.K_F1:
                     play_sfx('select'); settings_menu(user); reload_games()
+                    cached_keys = set(load_cache_manifest().keys())
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == BTN["confirm"] and filtered:  # A = launch
                     play_sfx('launch')
                     result = extract_and_launch(filtered[sel], user, card)
+                    cached_keys = set(load_cache_manifest().keys())
                     if result:
                         return True
                 if ev.button == BTN["back"]:  # B = back
                     play_sfx('back'); return False
                 if ev.button == BTN["start"]:  # Start = settings
                     play_sfx('select'); settings_menu(user); reload_games()
+                    cached_keys = set(load_cache_manifest().keys())
                 if ev.button == BTN["select"]:  # Select = search
                     play_sfx('select')
                     q = on_screen_keyboard("Search Games")
@@ -2945,7 +3037,6 @@ def screen_game_picker(user, card):
                      f"{len(filtered)} game{'s' if len(filtered) != 1 else ''}")
 
         if filtered:
-            cached_keys = set(load_cache_manifest().keys())
             items_display = [(truncate(strip_ext(g), F['md'], W - scaled(60)),
                               strip_ext(g) in cached_keys) for g in filtered]
             draw_list(items_display, sel, scroll)
