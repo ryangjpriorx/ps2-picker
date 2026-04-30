@@ -58,7 +58,7 @@ No mouse or keyboard required. Everything is navigable with a gamepad.
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/ps2-picker.git
+git clone https://github.com/ryangjpriorx/ps2-picker.git
 cd ps2-picker
 
 # Run the dependency checker (installs missing deps interactively)
