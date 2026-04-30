@@ -486,8 +486,15 @@ def run_gui_mode(check_only=False):
     pygame.init()
     pygame.joystick.init()
 
-    # Windowed mode for the checker (not fullscreen)
-    scr = pygame.display.set_mode((REF_W, REF_H), pygame.RESIZABLE)
+    # Detect native resolution — fullscreen on 720p or below (handhelds)
+    disp_info = pygame.display.Info()
+    native_h = disp_info.current_h
+    is_handheld = native_h <= 720
+
+    if is_handheld:
+        scr = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    else:
+        scr = pygame.display.set_mode((REF_W, REF_H), pygame.RESIZABLE)
     pygame.display.set_caption("PS2 Picker - Dependency Check")
     w, h = scr.get_size()
     scale = h / REF_H
