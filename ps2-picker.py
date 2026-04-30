@@ -9,6 +9,8 @@
      python3 ps2-checker.py --terminal    Force terminal mode (no GUI)
 """
 
+VERSION = '0.1.0'
+
 import os, sys, platform, shutil, subprocess, importlib.util, json, string, time, math
 
 # ═══ Platform Detection ═════════════════════════════════════════
@@ -142,93 +144,93 @@ def _get_current_branch():
         return None
 
 
-def _get_local_commit():
-    """Return the short hash of the current local HEAD commit."""
+def _parse_version(v):
+    """Parse a version string like '0.1.0' into a comparable tuple (0, 1, 0)."""
     try:
-        result = subprocess.run(
-            ['git', 'rev-parse', '--short', 'HEAD'],
-            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=10
-        )
-        return result.stdout.strip() if result.returncode == 0 else None
-    except Exception:
-        return None
+        return tuple(int(x) for x in v.strip().split('.'))
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
 
 
-def _get_remote_commit(branch):
-    """Return the short hash of the latest remote commit for a branch."""
+def _get_remote_version(channel):
+    """Read the VERSION string from the remote branch's ps2-checker.py.
+
+    Uses 'git show origin/<channel>:ps2-checker.py' to read the file
+    without checking it out, then extracts the VERSION = '...' line.
+    """
     try:
         result = subprocess.run(
-            ['git', 'rev-parse', '--short', f'origin/{branch}'],
-            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=10
+            ['git', 'show', f'origin/{channel}:ps2-checker.py'],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=15
         )
-        return result.stdout.strip() if result.returncode == 0 else None
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines()[:10]:  # VERSION is near the top
+            line = line.strip()
+            if line.startswith('VERSION'):
+                # Parse: VERSION = '0.1.0' or VERSION = "0.1.0"
+                parts = line.split('=', 1)
+                if len(parts) == 2:
+                    return parts[1].strip().strip("\"'")
     except Exception:
-        return None
+        pass
+    return None
 
 
 def check_for_updates():
-    """Check if updates are available on the configured channel.
+    """Check if a newer version is available on the configured channel.
+
+    Compares the local VERSION constant against the remote branch's VERSION
+    using semantic version comparison (tuple of ints).
 
     Returns:
         dict with keys:
-            'available'  (bool)  - True if remote is ahead of local
-            'channel'    (str)   - The update channel checked
-            'local'      (str)   - Local commit hash
-            'remote'     (str)   - Remote commit hash
-            'error'      (str)   - Error message if check failed, else None
+            'available'     (bool) - True if remote version is newer
+            'channel'       (str)  - The update channel checked
+            'local_version' (str)  - Local version string
+            'remote_version'(str)  - Remote version string (or None)
+            'error'         (str)  - Error message if check failed, else None
     """
     if not _has_git():
-        return {'available': False, 'channel': None, 'local': None,
-                'remote': None, 'error': 'git is not installed'}
+        return {'available': False, 'channel': None, 'local_version': VERSION,
+                'remote_version': None, 'error': 'git is not installed'}
     if not _is_git_repo():
-        return {'available': False, 'channel': None, 'local': None,
-                'remote': None, 'error': 'Not a git repository'}
+        return {'available': False, 'channel': None, 'local_version': VERSION,
+                'remote_version': None, 'error': 'Not a git repository'}
 
     channel = get_update_channel()
 
-    # Fetch latest from remote
+    # Fetch latest refs from remote
     try:
         result = subprocess.run(
             ['git', 'fetch', 'origin', channel],
             cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
-            return {'available': False, 'channel': channel, 'local': None,
-                    'remote': None, 'error': f'Fetch failed: {result.stderr.strip()}'}
+            return {'available': False, 'channel': channel, 'local_version': VERSION,
+                    'remote_version': None, 'error': f'Fetch failed: {result.stderr.strip()}'}
     except subprocess.TimeoutExpired:
-        return {'available': False, 'channel': channel, 'local': None,
-                'remote': None, 'error': 'Fetch timed out (no network?)'}
+        return {'available': False, 'channel': channel, 'local_version': VERSION,
+                'remote_version': None, 'error': 'Fetch timed out (no network?)'}
     except Exception as e:
-        return {'available': False, 'channel': channel, 'local': None,
-                'remote': None, 'error': str(e)}
+        return {'available': False, 'channel': channel, 'local_version': VERSION,
+                'remote_version': None, 'error': str(e)}
 
-    local = _get_local_commit()
-    remote = _get_remote_commit(channel)
+    remote_ver = _get_remote_version(channel)
+    if not remote_ver:
+        return {'available': False, 'channel': channel, 'local_version': VERSION,
+                'remote_version': None, 'error': 'Could not read remote version'}
+
+    local_tuple = _parse_version(VERSION)
+    remote_tuple = _parse_version(remote_ver)
     current_branch = _get_current_branch()
-
-    if not local or not remote:
-        return {'available': False, 'channel': channel, 'local': local,
-                'remote': remote, 'error': 'Could not read commit hashes'}
-
-    # Check if there are commits on remote that we don't have
-    try:
-        result = subprocess.run(
-            ['git', 'rev-list', '--count', f'HEAD..origin/{channel}'],
-            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=10
-        )
-        behind = int(result.stdout.strip()) if result.returncode == 0 else 0
-    except Exception:
-        behind = 0
-
-    # Also flag as update available if we need to switch branches
     needs_switch = (current_branch != channel)
 
     return {
-        'available': behind > 0 or needs_switch,
+        'available': remote_tuple > local_tuple or needs_switch,
         'channel': channel,
-        'local': local,
-        'remote': remote,
-        'behind': behind,
+        'local_version': VERSION,
+        'remote_version': remote_ver,
         'needs_switch': needs_switch,
         'current_branch': current_branch,
         'error': None,
@@ -238,11 +240,14 @@ def check_for_updates():
 def perform_update():
     """Pull the latest code from the configured update channel.
 
+    Switches branch if needed, then pulls. Reports old → new version.
+
     Returns:
         (success: bool, message: str)
     """
     channel = get_update_channel()
     current_branch = _get_current_branch()
+    old_version = VERSION
 
     # Switch branch if needed
     if current_branch != channel:
@@ -269,8 +274,9 @@ def perform_update():
     except Exception as e:
         return False, f'Pull error: {e}'
 
-    new_hash = _get_local_commit() or '???'
-    return True, f'Updated to {channel} ({new_hash})'
+    # Read the new version from the freshly pulled file
+    new_version = _get_remote_version(channel) or '???'
+    return True, f'Updated {old_version} \u2192 {new_version} ({channel})'
 
 
 # ═══ Checker Config Persistence ═════════════════════════════════
@@ -636,6 +642,7 @@ def run_terminal_mode(check_only=False):
 
     # ─── Update check ───────────────────────────────────
     channel = get_update_channel()
+    print(f"  {_cyan('Version:')}  {VERSION}")
     print(f"  {_cyan('Update Channel:')}  {channel}")
     if _has_git() and _is_git_repo():
         print(f"  {_dim('Checking for updates...')}")
@@ -643,15 +650,13 @@ def run_terminal_mode(check_only=False):
         if update_info['error']:
             print(f"  {_yellow('!')}  Update check: {update_info['error']}")
         elif update_info['available']:
-            behind = update_info.get('behind', 0)
+            local_v = update_info.get('local_version', VERSION)
+            remote_v = update_info.get('remote_version', '?')
             switch = update_info.get('needs_switch', False)
-            parts = []
-            if behind > 0:
-                parts.append(f"{behind} commit{'s' if behind != 1 else ''} behind")
+            parts = [f"{local_v} \u2192 {remote_v}"]
             if switch:
-                parts.append(f"branch switch: {update_info['current_branch']} \u2192 {channel}")
+                parts.append(f"branch: {update_info.get('current_branch', '?')} \u2192 {channel}")
             print(f"  {_yellow('!')}  {_bold('Update available:')} {', '.join(parts)}")
-            print(f"     Local: {update_info['local']}  Remote: {update_info['remote']}")
             print()
             try:
                 ans = input(f"  {_cyan('?')}  Update now? [y/N]: ").strip().lower()
@@ -668,7 +673,7 @@ def run_terminal_mode(check_only=False):
                 else:
                     print(f"  {_red('X')}  {msg}")
         else:
-            print(f"  {_green('OK')}  Up to date ({update_info['local']})")
+            print(f"  {_green('OK')}  Up to date (v{VERSION})")
     else:
         if not _has_git():
             print(f"  {_dim('Update check skipped: git not installed')}")
@@ -842,8 +847,8 @@ def run_gui_mode(check_only=False):
         scr.fill(BG)
         checking_surf = fonts['lg'].render('Checking for updates...', True, HINT)
         scr.blit(checking_surf, checking_surf.get_rect(center=(w // 2, h // 2)))
-        chan_surf = fonts['sm'].render(f'Channel: {channel}', True, TXT_DIM)
-        scr.blit(chan_surf, chan_surf.get_rect(center=(w // 2, h // 2 + sc(24))))
+        ver_surf = fonts['sm'].render(f'v{VERSION} ({channel})', True, TXT_DIM)
+        scr.blit(ver_surf, ver_surf.get_rect(center=(w // 2, h // 2 + sc(24))))
         pygame.display.flip()
 
         update_info = check_for_updates()
@@ -1007,7 +1012,7 @@ def run_gui_mode(check_only=False):
         scr.fill(BG)
 
         # Title
-        title_surf = fonts['xl'].render("PS2 Picker - Dependency Check", True, HDR)
+        title_surf = fonts['xl'].render(f"PS2 Picker v{VERSION}", True, HDR)
         scr.blit(title_surf, title_surf.get_rect(center=(w // 2, sc(22))))
 
         # OS info
@@ -1083,18 +1088,13 @@ def run_gui_mode(check_only=False):
             scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
         elif update_status == 'result' and update_info:
             if update_info['available']:
-                behind = update_info.get('behind', 0)
-                switch = update_info.get('needs_switch', False)
-                parts = []
-                if behind > 0:
-                    parts.append(f"{behind} commit{'s' if behind != 1 else ''} behind")
-                if switch:
-                    parts.append(f"{update_info.get('current_branch', '?')} \u2192 {channel}")
-                upd_label = f"\u2B06 Update available on {channel}: {', '.join(parts)}"
+                local_v = update_info.get('local_version', VERSION)
+                remote_v = update_info.get('remote_version', '?')
+                upd_label = f"\u2B06 Update available: v{local_v} \u2192 v{remote_v} ({channel})"
                 upd_s = fonts['sm'].render(upd_label, True, HDR)
                 scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
             else:
-                upd_s = fonts['sm'].render(f"\u2713  Up to date ({channel}: {update_info.get('local', '?')})", True, SUCCESS)
+                upd_s = fonts['sm'].render(f"\u2713  Up to date (v{VERSION} on {channel})", True, SUCCESS)
                 scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
         elif update_status == 'done':
             upd_s = fonts['sm'].render(f"\u2713  {update_msg}", True, SUCCESS)
