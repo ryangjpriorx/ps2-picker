@@ -826,9 +826,10 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
     """Controller-driven file/folder browser.
        mode='folder' = select folders, mode='file' = select files.
        A = enter folder (or select file in file mode)
-       B = go up one level / cancel at root
-       X = select this folder (folder mode only)
-       Y = type a path manually
+       B = go up one level (stays at root, never exits)
+       X = select this folder (folder mode) or select file (file mode)
+       Y = type a path manually (works anytime)
+       L1 = toggle hidden files/folders
        Returns selected path string or None if cancelled."""
     current = os.path.expanduser(start_path)
     if not os.path.isdir(current):
@@ -836,6 +837,7 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
     sel = 0
     scroll = 0
     last_joy = 0
+    show_hidden = False
     VIS = (H - 100) // LINE_H
 
     while True:
@@ -844,10 +846,16 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
             raw = sorted(os.listdir(current), key=str.lower)
         except PermissionError:
             raw = []
-        dirs = [d for d in raw if os.path.isdir(os.path.join(current, d)) and not d.startswith('.')]
+        if show_hidden:
+            dirs = [d for d in raw if os.path.isdir(os.path.join(current, d))]
+        else:
+            dirs = [d for d in raw if os.path.isdir(os.path.join(current, d)) and not d.startswith('.')]
         files = []
         if mode == "file":
-            files = [f for f in raw if os.path.isfile(os.path.join(current, f)) and not f.startswith('.')]
+            if show_hidden:
+                files = [f for f in raw if os.path.isfile(os.path.join(current, f))]
+            else:
+                files = [f for f in raw if os.path.isfile(os.path.join(current, f)) and not f.startswith('.')]
         entries = dirs + files
         n_dirs = len(dirs)
         sel = max(0, min(sel, len(entries) - 1)) if entries else 0
@@ -863,7 +871,7 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
                     if parent != current:
                         current = parent; sel = 0; scroll = 0
                     else:
-                        return None
+                        play_sfx('error')  # Already at root
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN and entries:
@@ -877,6 +885,24 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
                 if ev.key == pygame.K_x or ev.key == pygame.K_SPACE:
                     if mode == "folder":
                         play_sfx('select'); return current
+                    elif mode == "file" and entries and sel >= n_dirs:
+                        play_sfx('select'); return os.path.join(current, entries[sel])
+                if ev.key == pygame.K_h:  # Toggle hidden
+                    show_hidden = not show_hidden; sel = 0; scroll = 0; play_sfx('navigate')
+                if ev.key == pygame.K_y:  # Manual path
+                    play_sfx('select')
+                    typed = on_screen_keyboard("Enter path manually")
+                    if typed:
+                        typed = os.path.expanduser(typed)
+                        if os.path.isdir(typed):
+                            if mode == "folder":
+                                return typed
+                            else:
+                                current = typed; sel = 0; scroll = 0
+                        elif os.path.isfile(typed) and mode == "file":
+                            return typed
+                        else:
+                            play_sfx('error')
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == 0 and entries:  # A = enter folder / select file
                     full = os.path.join(current, entries[sel])
@@ -884,25 +910,36 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
                         current = full; sel = 0; scroll = 0; play_sfx('select')
                     elif mode == "file":
                         play_sfx('select'); return full
-                if ev.button == 1:  # B = go up / cancel
+                if ev.button == 1:  # B = go up one level (never exits)
                     play_sfx('back')
                     parent = os.path.dirname(current)
                     if parent != current:
                         current = parent; sel = 0; scroll = 0
                     else:
-                        return None
-                if ev.button == 2:  # X = select this folder
+                        play_sfx('error')  # Already at root
+                if ev.button == 2:  # X = select this folder/file
                     if mode == "folder":
                         play_sfx('select'); return current
-                if ev.button == 3:  # Y = manual path input
+                    elif mode == "file" and entries and sel >= n_dirs:
+                        play_sfx('select'); return os.path.join(current, entries[sel])
+                if ev.button == 3:  # Y = manual path input (anytime)
                     play_sfx('select')
                     typed = on_screen_keyboard("Enter path manually")
-                    if typed and os.path.isdir(typed):
-                        current = typed; sel = 0; scroll = 0
-                    elif typed and os.path.isfile(typed) and mode == "file":
-                        return typed
-                    elif typed:
-                        play_sfx('error')
+                    if typed:
+                        typed = os.path.expanduser(typed)
+                        if os.path.isdir(typed):
+                            if mode == "folder":
+                                return typed
+                            else:
+                                current = typed; sel = 0; scroll = 0
+                        elif os.path.isfile(typed) and mode == "file":
+                            return typed
+                        else:
+                            play_sfx('error')
+                if ev.button == 4:  # L1 = toggle hidden files
+                    show_hidden = not show_hidden; sel = 0; scroll = 0; play_sfx('navigate')
+                if ev.button == 7:  # Start = cancel browser, return None
+                    play_sfx('back'); return None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
@@ -931,8 +968,9 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
         screen.fill(BG)
         ps = F['lg'].render(prompt, True, HDR)
         screen.blit(ps, (12, 6))
-        # Current path
-        display_path = truncate(current, F['sm'], W - 24)
+        # Current path + hidden indicator
+        path_suffix = "  [showing hidden]" if show_hidden else ""
+        display_path = truncate(current + path_suffix, F['sm'], W - 24)
         pp = F['sm'].render(display_path, True, ACCENT)
         screen.blit(pp, (12, 30))
         pygame.draw.line(screen, ACCENT, (10, 48), (W - 10, 48), 1)
@@ -944,13 +982,17 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
             name = entries[i]
             is_dir = i < n_dirs
             is_sel = (i == sel)
+            is_hidden = name.startswith('.')
 
             if is_sel:
                 pygame.draw.rect(screen, SEL_BG, (6, ey, W - 12, LINE_H - 2), border_radius=4)
 
             prefix = "[DIR] " if is_dir else "      "
             display = truncate(prefix + name, F['md'], W - 30)
-            color = TXT_SEL if is_sel else (HDR if is_dir else TXT)
+            if is_hidden:
+                color = TXT_DIM if not is_sel else TXT_SEL
+            else:
+                color = TXT_SEL if is_sel else (HDR if is_dir else TXT)
             font = F['md_b'] if is_sel else F['md']
             label = font.render(display, True, color)
             screen.blit(label, (14, ey + 3))
@@ -961,9 +1003,9 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
 
         # Bottom hints
         if mode == "folder":
-            hint_text = "[A] Open folder   [B] Go back   [X] Select this folder   [Y] Type path"
+            hint_text = "[A] Open   [B] Back   [X] Select folder   [Y] Type path   [L1] Hidden"
         else:
-            hint_text = "[A] Open/Select   [B] Go back   [Y] Type path"
+            hint_text = "[A] Open/Select   [B] Back   [X] Select   [Y] Type path   [L1] Hidden"
         hint = F['sm'].render(hint_text, True, HINT)
         screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
         pygame.display.flip()
@@ -1012,31 +1054,34 @@ def first_time_setup():
         pygame.display.flip()
         clock.tick(30)
 
-    # -- Step 2: ROM directory --
-    draw_center_msg("Step 1 of 5", "Where are your PS2 games stored?",
-                    "Opening file browser...")
-    time.sleep(0.8)
-    rom_path = file_browser("Select your ROM/Games folder", start_path="/")
-    if rom_path:
-        cfg["rom_dir"] = rom_path
-    else:
-        typed = on_screen_keyboard("Enter ROM folder path")
-        if typed:
-            cfg["rom_dir"] = typed
+    # -- Step 2: ROM directory (required) --
+    while True:
+        draw_center_msg("Step 1 of 5", "Where are your PS2 games stored?",
+                        "Browse to your ROM folder, or press [Y] to type the path")
+        time.sleep(0.8)
+        rom_path = file_browser("Select your ROM/Games folder", start_path=os.path.expanduser("~"))
+        if rom_path and os.path.isdir(rom_path):
+            cfg["rom_dir"] = rom_path
+            break
+        # file_browser returned None (Start pressed) - offer keyboard
+        draw_center_msg("Step 1 of 5", "No folder selected.",
+                        "Press any button to try again")
+        _wait_any_button()
 
-    # -- Step 3: Core path --
-    draw_center_msg("Step 2 of 5", "Locate your RetroArch PS2 core (.so file)",
-                    "Opening file browser...")
-    time.sleep(0.8)
-    default_cores = os.path.expanduser("~/.config/retroarch/cores")
-    core_start = default_cores if os.path.isdir(default_cores) else "/"
-    core_path = file_browser("Select PS2 core file (.so)", start_path=core_start, mode="file")
-    if core_path:
-        cfg["core_path"] = core_path
-    else:
-        typed = on_screen_keyboard("Enter core path")
-        if typed:
-            cfg["core_path"] = typed
+    # -- Step 3: Core path (required) --
+    while True:
+        draw_center_msg("Step 2 of 5", "Locate your RetroArch PS2 core (.so file)",
+                        "Tip: press [L1] to show hidden folders like .config")
+        time.sleep(0.8)
+        default_cores = os.path.expanduser("~/.config/retroarch/cores")
+        core_start = default_cores if os.path.isdir(default_cores) else os.path.expanduser("~")
+        core_path = file_browser("Select PS2 core file (.so)", start_path=core_start, mode="file")
+        if core_path and os.path.isfile(core_path):
+            cfg["core_path"] = core_path
+            break
+        draw_center_msg("Step 2 of 5", "No core file selected.",
+                        "Press any button to try again")
+        _wait_any_button()
 
     # -- Step 4: Cache directory + max cached --
     draw_center_msg("Step 3 of 5", "Game cache settings",
@@ -1048,9 +1093,14 @@ def first_time_setup():
     if use_default:
         cfg["local_cache_dir"] = default_cache
     else:
-        cache_path = file_browser("Select cache folder", start_path=os.path.expanduser("~"))
-        if cache_path:
-            cfg["local_cache_dir"] = cache_path
+        while True:
+            cache_path = file_browser("Select cache folder", start_path=os.path.expanduser("~"))
+            if cache_path and os.path.isdir(cache_path):
+                cfg["local_cache_dir"] = cache_path
+                break
+            draw_center_msg("Step 3 of 5", "No folder selected.",
+                            "Press any button to try again")
+            _wait_any_button()
 
     result = number_input("Max games to keep cached?",
                           cfg.get("max_cached_games", 3), min_val=1, max_val=20)
@@ -1066,14 +1116,19 @@ def first_time_setup():
     if vol_result is not None:
         cfg["volume"], cfg["muted"] = vol_result
 
-    # -- Step 6: Create first user --
-    draw_center_msg("Step 5 of 5", "Create your profile", "")
-    time.sleep(0.6)
-    name = on_screen_keyboard("Enter your username")
-    if name and name.strip():
-        name = name.strip()
-        if name not in get_users():
-            create_user(name)
+    # -- Step 6: Create first user (required) --
+    while True:
+        draw_center_msg("Step 5 of 5", "Create your profile", "")
+        time.sleep(0.6)
+        name = on_screen_keyboard("Enter your username")
+        if name and name.strip():
+            name = name.strip()
+            if name not in get_users():
+                create_user(name)
+            break
+        draw_center_msg("Step 5 of 5", "A username is required.",
+                        "Press any button to try again")
+        _wait_any_button()
 
     # -- Save --
     cfg["setup_complete"] = True
