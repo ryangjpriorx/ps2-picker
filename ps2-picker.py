@@ -983,7 +983,7 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
         # Build directory listing
         try:
             raw = sorted(os.listdir(current), key=str.lower)
-        except PermissionError:
+        except OSError:
             raw = []
         if show_hidden:
             dirs = [d for d in raw if os.path.isdir(os.path.join(current, d))]
