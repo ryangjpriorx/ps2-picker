@@ -137,7 +137,7 @@ TXT      = (220, 210, 190)
 TXT_SEL  = (255, 215, 0)
 TXT_DIM  = (140, 130, 120)
 HDR      = (255, 200, 50)
-HINT     = (140, 100, 170)
+HINT     = (210, 170, 100)
 BAR_BG   = (40, 20, 65)
 BAR_FG   = (180, 140, 50)
 BAR_BORDER = (120, 80, 180)
@@ -376,13 +376,28 @@ def get_dir_size(d):
 
 # ═══ Pygame setup ═══════════════════════════════════════════════
 
+# ═══ Resolution scaling ═════════════════════════════════════════
+# Reference resolution is 480p. Everything scales relative to that.
+REF_H = 480
+UI_SCALE = 1.0  # Updated at init_display()
+
+
+def scaled(val):
+    """Scale a pixel value by the current UI scale factor."""
+    return max(1, int(val * UI_SCALE))
+
+
 def init_display():
     """Initialize or reinitialize pygame and return (screen, fonts, joy)."""
+    global UI_SCALE, LINE_H, VISIBLE
     pygame.init()
     pygame.joystick.init()
 
     scr = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     w, h = scr.get_size()
+
+    # Calculate scale factor from actual height vs reference 480p
+    UI_SCALE = h / REF_H
 
     # Pick a font that exists on this platform
     font_name = None
@@ -395,12 +410,16 @@ def init_display():
             break
 
     fonts = {
-        'sm': pygame.font.SysFont(font_name, 11),
-        'md': pygame.font.SysFont(font_name, 16),
-        'md_b': pygame.font.SysFont(font_name, 16, bold=True),
-        'lg': pygame.font.SysFont(font_name, 20, bold=True),
-        'xl': pygame.font.SysFont(font_name, 22, bold=True),
+        'sm': pygame.font.SysFont(font_name, scaled(11)),
+        'md': pygame.font.SysFont(font_name, scaled(16)),
+        'md_b': pygame.font.SysFont(font_name, scaled(16), bold=True),
+        'lg': pygame.font.SysFont(font_name, scaled(20), bold=True),
+        'xl': pygame.font.SysFont(font_name, scaled(22), bold=True),
     }
+
+    # Scale layout constants
+    LINE_H = scaled(24)
+    VISIBLE = (h - scaled(70)) // LINE_H
 
     joy = None
     if pygame.joystick.get_count() > 0:
@@ -413,8 +432,8 @@ def init_display():
 screen, W, H, F, joy = init_display()
 clock = pygame.time.Clock()
 
-LINE_H = 24
-VISIBLE = (H - 70) // LINE_H
+LINE_H = scaled(24)
+VISIBLE = (H - scaled(70)) // LINE_H
 DPAD_DELAY = 180
 
 
@@ -428,35 +447,45 @@ def truncate(text, font, max_w):
     return text + "..."
 
 
+def draw_hint_bar(text):
+    """Draw a visible hint bar at the bottom of the screen."""
+    bar_h = scaled(22)
+    bar_rect = pygame.Rect(0, H - bar_h, W, bar_h)
+    pygame.draw.rect(screen, (30, 14, 50), bar_rect)
+    pygame.draw.line(screen, ACCENT, (0, H - bar_h), (W, H - bar_h), 1)
+    hs = F['sm'].render(text, True, HINT)
+    screen.blit(hs, hs.get_rect(center=(W // 2, H - bar_h // 2)))
+
+
 def draw_header(title, hint_text=None, count_text=None):
     t = F['lg'].render(title, True, HDR)
-    screen.blit(t, (12, 6))
+    screen.blit(t, (scaled(12), scaled(6)))
     if count_text:
         cs = F['sm'].render(count_text, True, HINT)
-        screen.blit(cs, (W - cs.get_width() - 12, 12))
+        screen.blit(cs, (W - cs.get_width() - scaled(12), scaled(12)))
     if hint_text:
         h = F['sm'].render(hint_text, True, HINT)
-        screen.blit(h, (12, 30))
-    pygame.draw.line(screen, ACCENT, (10, 46), (W - 10, 46), 1)
+        screen.blit(h, (scaled(12), scaled(30)))
+    pygame.draw.line(screen, ACCENT, (scaled(10), scaled(46)), (W - scaled(10), scaled(46)), 1)
 
 
 def draw_list(items, sel_idx, scroll, colors=None):
     """Draw a scrollable list. items = list of (text, is_special) tuples."""
-    top = 50
+    top = scaled(50)
     vis = VISIBLE
     for i in range(scroll, min(scroll + vis, len(items))):
         y = top + (i - scroll) * LINE_H
         text, special = items[i]
-        display = truncate(text, F['md'], W - 30)
+        display = truncate(text, F['md'], W - scaled(30))
         if i == sel_idx:
             bg = DANGER if (colors and colors.get(i) == 'danger') else SEL_BG
-            pygame.draw.rect(screen, bg, (6, y, W - 12, LINE_H - 2), border_radius=4)
+            pygame.draw.rect(screen, bg, (scaled(6), y, W - scaled(12), LINE_H - 2), border_radius=scaled(4))
             color = TXT_SEL
             label = F['md_b'].render(display, True, color)
         else:
             color = HDR if special else TXT
             label = F['md'].render(display, True, color)
-        screen.blit(label, (14, y + 3))
+        screen.blit(label, (scaled(14), y + scaled(3)))
 
 
 def draw_center_msg(top_text, mid_text="", bot_text=""):
@@ -468,8 +497,7 @@ def draw_center_msg(top_text, mid_text="", bot_text=""):
         s = F['md'].render(mid_text, True, TXT)
         screen.blit(s, s.get_rect(center=(W // 2, H // 2)))
     if bot_text:
-        s = F['sm'].render(bot_text, True, HINT)
-        screen.blit(s, s.get_rect(center=(W // 2, H - 25)))
+        draw_hint_bar(bot_text)
     pygame.display.flip()
 
 
@@ -478,26 +506,26 @@ def draw_progress(game_name, progress, status="Extracting"):
     s = F['xl'].render(status, True, HDR)
     screen.blit(s, s.get_rect(center=(W // 2, H // 6)))
     bw = int(W * 0.7)
-    bh = 22
+    bh = scaled(22)
     bx = (W - bw) // 2
     by = H // 2 - bh // 2
-    pygame.draw.rect(screen, BAR_BG, (bx, by, bw, bh), border_radius=6)
-    pygame.draw.rect(screen, BAR_BORDER, (bx, by, bw, bh), 2, border_radius=6)
+    pygame.draw.rect(screen, BAR_BG, (bx, by, bw, bh), border_radius=scaled(6))
+    pygame.draw.rect(screen, BAR_BORDER, (bx, by, bw, bh), 2, border_radius=scaled(6))
     if progress > 0:
         fw = max(4, int((bw - 4) * min(progress, 1.0)))
-        pygame.draw.rect(screen, BAR_FG, (bx + 2, by + 2, fw, bh - 4), border_radius=4)
+        pygame.draw.rect(screen, BAR_FG, (bx + 2, by + 2, fw, bh - 4), border_radius=scaled(4))
     pt = F['md_b'].render(f"{int(progress * 100)}%", True, TXT_SEL)
-    screen.blit(pt, pt.get_rect(center=(W // 2, by + bh + 16)))
-    dn = truncate(strip_ext(game_name), F['md'], W - 60)
+    screen.blit(pt, pt.get_rect(center=(W // 2, by + bh + scaled(16))))
+    dn = truncate(strip_ext(game_name), F['md'], W - scaled(60))
     n = F['md'].render(dn, True, TXT)
     screen.blit(n, n.get_rect(center=(W // 2, int(H * 0.78))))
-    ch = F['sm'].render("B: Cancel", True, HINT)
-    screen.blit(ch, ch.get_rect(center=(W // 2, H - 20)))
+    draw_hint_bar("B: Cancel")
     pygame.display.flip()
 
 
 def draw_toast(msg, color=SUCCESS, duration=1.2):
     """Show a brief toast notification at the bottom of the screen."""
+    toast_h = scaled(40)
     start = time.time()
     while time.time() - start < duration:
         for ev in pygame.event.get():
@@ -505,13 +533,13 @@ def draw_toast(msg, color=SUCCESS, duration=1.2):
                 return
         t = (time.time() - start) / duration
         alpha = int(255 * (1 - t) if t > 0.7 else 255)
-        overlay = pygame.Surface((W, 40))
+        overlay = pygame.Surface((W, toast_h))
         overlay.fill(color)
         overlay.set_alpha(alpha)
-        screen.blit(overlay, (0, H - 40))
+        screen.blit(overlay, (0, H - toast_h))
         ts = F['md_b'].render(msg, True, BG)
         ts.set_alpha(alpha)
-        screen.blit(ts, ts.get_rect(center=(W // 2, H - 20)))
+        screen.blit(ts, ts.get_rect(center=(W // 2, H - toast_h // 2)))
         pygame.display.flip()
         clock.tick(30)
 
@@ -607,28 +635,28 @@ def on_screen_keyboard(prompt="Enter Text"):
         screen.fill(BG)
         # Prompt
         ps = F['lg'].render(prompt, True, HDR)
-        screen.blit(ps, ps.get_rect(center=(W // 2, 20)))
+        screen.blit(ps, ps.get_rect(center=(W // 2, scaled(20))))
         # Text field
-        tf_rect = pygame.Rect(20, 44, W - 40, 28)
-        pygame.draw.rect(screen, KEY_BG, tf_rect, border_radius=6)
-        pygame.draw.rect(screen, ACCENT, tf_rect, 1, border_radius=6)
+        tf_rect = pygame.Rect(scaled(20), scaled(44), W - scaled(40), scaled(28))
+        pygame.draw.rect(screen, KEY_BG, tf_rect, border_radius=scaled(6))
+        pygame.draw.rect(screen, ACCENT, tf_rect, 1, border_radius=scaled(6))
         display_text = text + "|"
         ts = F['md'].render(display_text, True, TXT_SEL)
-        screen.blit(ts, (tf_rect.x + 8, tf_rect.y + 5))
+        screen.blit(ts, (tf_rect.x + scaled(8), tf_rect.y + scaled(5)))
         # Keyboard grid
-        kw = (W - 40) // KB_COLS
-        kh = 32
-        ky_start = 80
+        kw = (W - scaled(40)) // KB_COLS
+        kh = scaled(32)
+        ky_start = scaled(80)
         for r in range(KB_NROWS):
             for c in range(KB_COLS):
                 rx = 20 + c * kw
-                ry = ky_start + r * (kh + 4)
-                rect = pygame.Rect(rx, ry, kw - 4, kh)
+                ry = ky_start + r * (kh + scaled(4))
+                rect = pygame.Rect(rx, ry, kw - scaled(4), kh)
                 is_sel = (r == ky and c == kx)
                 bg_c = KEY_SEL if is_sel else KEY_BG
-                pygame.draw.rect(screen, bg_c, rect, border_radius=4)
+                pygame.draw.rect(screen, bg_c, rect, border_radius=scaled(4))
                 if is_sel:
-                    pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=4)
+                    pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=scaled(4))
                 ch = kb_rows[r][c]
                 color = TXT_SEL if is_sel else TXT
                 if ch == "\u2713":
@@ -638,8 +666,7 @@ def on_screen_keyboard(prompt="Enter Text"):
                 cs = F['md_b'].render(ch, True, color)
                 screen.blit(cs, cs.get_rect(center=rect.center))
         # Hints
-        hint = F['sm'].render("[A] Type   [B] Cancel   [Start] Confirm   Physical keyboard works too", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+        draw_hint_bar("[A] Type   [B] Cancel   [Start] Confirm   Physical keyboard works too")
         pygame.display.flip()
         clock.tick(30)
 
@@ -682,18 +709,17 @@ def confirm_dialog(message):
         ms = F['lg'].render(message, True, HDR)
         screen.blit(ms, ms.get_rect(center=(W // 2, H // 3)))
         for i, label in enumerate(["Yes", "No"]):
-            bx = W // 2 + (i * 120 - 60)
-            rect = pygame.Rect(bx - 40, H // 2, 80, 32)
+            bx = W // 2 + (i * scaled(120) - scaled(60))
+            rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
             if i == sel:
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=6)
-                pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=6)
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+                pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=scaled(6))
             else:
-                pygame.draw.rect(screen, KEY_BG, rect, border_radius=6)
+                pygame.draw.rect(screen, KEY_BG, rect, border_radius=scaled(6))
             color = TXT_SEL if i == sel else TXT
             ls = F['md_b'].render(label, True, color)
             screen.blit(ls, ls.get_rect(center=rect.center))
-        hint = F['sm'].render("[A] Select   [B] Cancel", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
+        draw_hint_bar("[A] Select   [B] Cancel")
         pygame.display.flip()
         clock.tick(30)
 
@@ -752,15 +778,14 @@ def number_input(prompt, current_val, min_val=1, max_val=99, step=1):
         vs = F['xl'].render(str(val), True, TXT_SEL)
         cx = W // 2
         cy = H // 2
-        screen.blit(arrow_l, arrow_l.get_rect(center=(cx - 60, cy)))
+        screen.blit(arrow_l, arrow_l.get_rect(center=(cx - scaled(60), cy)))
         screen.blit(vs, vs.get_rect(center=(cx, cy)))
-        screen.blit(arrow_r, arrow_r.get_rect(center=(cx + 60, cy)))
+        screen.blit(arrow_r, arrow_r.get_rect(center=(cx + scaled(60), cy)))
 
         rng = F['sm'].render(f"Range: {min_val} - {max_val}", True, TXT_DIM)
-        screen.blit(rng, rng.get_rect(center=(W // 2, cy + 40)))
+        screen.blit(rng, rng.get_rect(center=(W // 2, cy + scaled(40))))
 
-        hint = F['sm'].render("[D-Pad] Adjust   [A] Confirm   [B] Cancel", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
+        draw_hint_bar("[D-Pad] Adjust   [A] Confirm   [B] Cancel")
         pygame.display.flip()
         clock.tick(30)
 
@@ -833,20 +858,19 @@ def volume_slider(prompt="Volume", current_vol=0.5, muted=False):
 
         # Slider bar
         bw = int(W * 0.6)
-        bh = 16
+        bh = scaled(16)
         bx = (W - bw) // 2
         by = H // 2
-        pygame.draw.rect(screen, BAR_BG, (bx, by, bw, bh), border_radius=8)
-        pygame.draw.rect(screen, BAR_BORDER, (bx, by, bw, bh), 1, border_radius=8)
+        pygame.draw.rect(screen, BAR_BG, (bx, by, bw, bh), border_radius=scaled(8))
+        pygame.draw.rect(screen, BAR_BORDER, (bx, by, bw, bh), 1, border_radius=scaled(8))
         if not is_muted and vol > 0:
             fw = max(4, int((bw - 4) * vol))
-            pygame.draw.rect(screen, ACCENT, (bx + 2, by + 2, fw, bh - 4), border_radius=6)
+            pygame.draw.rect(screen, ACCENT, (bx + 2, by + 2, fw, bh - 4), border_radius=scaled(6))
         # Slider knob
         knob_x = bx + 2 + int((bw - 4) * vol)
-        pygame.draw.circle(screen, TXT_SEL, (knob_x, by + bh // 2), 10)
+        pygame.draw.circle(screen, TXT_SEL, (knob_x, by + bh // 2), scaled(10))
 
-        hint = F['sm'].render("[D-Pad] Adjust   [X] Mute/Unmute   [A] Confirm   [B] Cancel", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
+        draw_hint_bar("[D-Pad] Adjust   [X] Mute/Unmute   [A] Confirm   [B] Cancel")
         pygame.display.flip()
         clock.tick(30)
 
@@ -880,7 +904,7 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
     scroll = 0
     last_joy = 0
     show_hidden = False
-    VIS = (H - 100) // LINE_H
+    VIS = (H - scaled(100)) // LINE_H
 
     while True:
         # Build directory listing
@@ -1022,16 +1046,16 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
         # Draw
         screen.fill(BG)
         ps = F['lg'].render(prompt, True, HDR)
-        screen.blit(ps, (12, 6))
+        screen.blit(ps, (scaled(12), scaled(6)))
         # Current path + hidden indicator
         path_suffix = "  [showing hidden]" if show_hidden else ""
-        display_path = truncate(current + path_suffix, F['sm'], W - 24)
+        display_path = truncate(current + path_suffix, F['sm'], W - scaled(24))
         pp = F['sm'].render(display_path, True, ACCENT)
-        screen.blit(pp, (12, 30))
-        pygame.draw.line(screen, ACCENT, (10, 48), (W - 10, 48), 1)
+        screen.blit(pp, (scaled(12), scaled(30)))
+        pygame.draw.line(screen, ACCENT, (scaled(10), scaled(48)), (W - scaled(10), scaled(48)), 1)
 
         # Entries
-        y = 52
+        y = scaled(52)
         for i in range(scroll, min(scroll + VIS, len(entries))):
             ey = y + (i - scroll) * LINE_H
             name = entries[i]
@@ -1040,17 +1064,17 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
             is_hidden = name.startswith('.')
 
             if is_sel:
-                pygame.draw.rect(screen, SEL_BG, (6, ey, W - 12, LINE_H - 2), border_radius=4)
+                pygame.draw.rect(screen, SEL_BG, (scaled(6), ey, W - scaled(12), LINE_H - 2), border_radius=scaled(4))
 
             prefix = "[DIR] " if is_dir else "      "
-            display = truncate(prefix + name, F['md'], W - 30)
+            display = truncate(prefix + name, F['md'], W - scaled(30))
             if is_hidden:
                 color = TXT_DIM if not is_sel else TXT_SEL
             else:
                 color = TXT_SEL if is_sel else (HDR if is_dir else TXT)
             font = F['md_b'] if is_sel else F['md']
             label = font.render(display, True, color)
-            screen.blit(label, (14, ey + 3))
+            screen.blit(label, (scaled(14), ey + scaled(3)))
 
         if not entries:
             es = F['md'].render("(empty folder)", True, TXT_DIM)
@@ -1061,8 +1085,7 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
             hint_text = "[A] Open   [B] Back   [X] Select folder   [Y] Type path   [L1] Hidden"
         else:
             hint_text = "[A] Open/Select   [B] Back   [X] Select   [Y] Type path   [L1] Hidden"
-        hint = F['sm'].render(hint_text, True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+        draw_hint_bar(hint_text)
         pygame.display.flip()
         clock.tick(30)
 
@@ -1086,9 +1109,9 @@ def first_time_setup():
         ts = F['xl'].render("Welcome to PS2 Picker", True, HDR)
         screen.blit(ts, ts.get_rect(center=(W // 2, H // 4)))
         ss = F['md'].render("Let's get everything set up.", True, TXT)
-        screen.blit(ss, ss.get_rect(center=(W // 2, H // 4 + 35)))
+        screen.blit(ss, ss.get_rect(center=(W // 2, H // 4 + scaled(35))))
         ss2 = F['md'].render("This will only take a moment.", True, TXT_DIM)
-        screen.blit(ss2, ss2.get_rect(center=(W // 2, H // 4 + 60)))
+        screen.blit(ss2, ss2.get_rect(center=(W // 2, H // 4 + scaled(60))))
 
         steps_info = [
             "1. Choose where your PS2 games are stored",
@@ -1100,12 +1123,12 @@ def first_time_setup():
         for i, step_text in enumerate(steps_info):
             color = HINT if i > 0 else TXT_SEL
             st = F['md'].render(step_text, True, color)
-            screen.blit(st, (40, H // 2 + i * 28))
+            screen.blit(st, (scaled(40), H // 2 + i * scaled(28)))
 
         hint = F['sm'].render("Press any button to begin", True, ACCENT)
         pulse = 0.4 + 0.6 * abs(math.sin(time.time() * 2.5))
         hint.set_alpha(int(255 * pulse))
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 25)))
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - scaled(25))))
         pygame.display.flip()
         clock.tick(30)
 
@@ -1268,16 +1291,16 @@ def settings_menu(username=None):
         title = f"Settings - {username}" if username else "Global Settings"
         draw_header(title, "[A] Edit   [B] Back")
 
-        y = 60
+        y = scaled(60)
         for i, (label, key) in enumerate(items):
             is_sel = (i == sel)
-            rect = pygame.Rect(20, y, W - 40, 38)
+            rect = pygame.Rect(scaled(20), y, W - scaled(40), scaled(38))
             if is_sel:
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=6)
-            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=6)
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
 
             lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
-            screen.blit(lbl, (rect.x + 12, rect.y + 4))
+            screen.blit(lbl, (rect.x + scaled(12), rect.y + scaled(4)))
 
             if key not in ("back",):
                 val = active_cfg.get(key, "")
@@ -1289,14 +1312,13 @@ def settings_menu(username=None):
                 elif key == "max_cached_games":
                     val_str = str(val)
                 else:
-                    val_str = truncate(str(val), F['sm'], W // 2 - 20) if val else "(not set)"
+                    val_str = truncate(str(val), F['sm'], W // 2 - scaled(20)) if val else "(not set)"
                 vs = F['sm'].render(val_str, True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(vs, (rect.right - vs.get_width() - 12, rect.y + 10))
+                screen.blit(vs, (rect.right - vs.get_width() - scaled(12), rect.y + scaled(10)))
 
-            y += 44
+            y += scaled(44)
 
-        hint = F['sm'].render("Settings are saved per-user when logged in", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+        draw_hint_bar("Settings are saved per-user when logged in")
         pygame.display.flip()
         clock.tick(30)
 
@@ -1444,16 +1466,16 @@ def evict_cached_picker():
         screen.fill(BG)
         draw_header("Cache Full", f"Select a game to remove ({len(entries)}/{max_cached})")
 
-        y = 60
+        y = scaled(60)
         for i in range(scroll, min(scroll + VIS, len(entries))):
             name = entries[i]
             is_sel = (i == sel)
-            rect = pygame.Rect(20, y, W - 40, 44)
+            rect = pygame.Rect(scaled(20), y, W - scaled(40), scaled(44))
             if is_sel:
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=6)
-            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=6)
-            label = F['md'].render(truncate(name, F['md'], W - 120), True, TXT_SEL if is_sel else TXT)
-            screen.blit(label, (rect.x + 12, rect.y + 6))
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
+            label = F['md'].render(truncate(name, F['md'], W - scaled(120)), True, TXT_SEL if is_sel else TXT)
+            screen.blit(label, (rect.x + scaled(12), rect.y + scaled(6)))
             last_used = manifest[name].get("last_used", 0)
             if last_used > 0:
                 age = time.time() - last_used
@@ -1464,11 +1486,10 @@ def evict_cached_picker():
                 else:
                     age_str = f"{int(age / 86400)}d ago"
                 age_s = F['sm'].render(age_str, True, TXT_DIM)
-                screen.blit(age_s, (rect.right - age_s.get_width() - 12, rect.y + 14))
-            y += 50
+                screen.blit(age_s, (rect.right - age_s.get_width() - scaled(12), rect.y + scaled(14)))
+            y += scaled(50)
 
-        hint = F['sm'].render("[A] Delete   [B] Cancel", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
+        draw_hint_bar("[A] Delete   [B] Cancel")
         pygame.display.flip()
         clock.tick(30)
 
@@ -1708,8 +1729,7 @@ def screen_user_picker():
                      f"{len(users)} profile{'s' if len(users) != 1 else ''}")
         draw_list(items, sel, scroll)
 
-        hint = F['sm'].render("[A] Select   [B] Exit", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+        draw_hint_bar("[A] Select   [B] Exit")
         pygame.display.flip()
         clock.tick(30)
 
@@ -1793,8 +1813,7 @@ def screen_memcard_picker(user):
                      f"{len(cards)} card{'s' if len(cards) != 1 else ''}")
         draw_list(items, sel, scroll)
 
-        hint = F['sm'].render("[A] Select   [B] Back   [X] Delete card", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+        draw_hint_bar("[A] Select   [B] Back   [X] Delete card")
         pygame.display.flip()
         clock.tick(30)
 
@@ -1822,10 +1841,9 @@ def screen_game_picker(user, card):
             rom_dir = active_cfg.get('rom_dir', '(not set)')
             msg1 = F['md'].render("No games found", True, TXT)
             msg2 = F['sm'].render(f"ROM folder: {rom_dir}", True, TXT_DIM)
-            screen.blit(msg1, msg1.get_rect(center=(W // 2, H // 2 - 15)))
-            screen.blit(msg2, msg2.get_rect(center=(W // 2, H // 2 + 15)))
-            hint = F['sm'].render("[B] Back   [Start] Settings", True, HINT)
-            screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+            screen.blit(msg1, msg1.get_rect(center=(W // 2, H // 2 - scaled(15))))
+            screen.blit(msg2, msg2.get_rect(center=(W // 2, H // 2 + scaled(15))))
+            draw_hint_bar("[B] Back   [Start] Settings")
             pygame.display.flip()
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
@@ -1920,8 +1938,7 @@ def screen_game_picker(user, card):
             items_display = [(truncate(strip_ext(g), F['md'], W - 30), False) for g in filtered]
             draw_list(items_display, sel, scroll)
 
-        hint = F['sm'].render("[A] Launch   [B] Back   [Start] Settings   [Select] Search", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+        draw_hint_bar("[A] Launch   [B] Back   [Start] Settings   [Select] Search")
         pygame.display.flip()
         clock.tick(30)
 
@@ -1960,21 +1977,21 @@ def show_splash():
         title_t = min(t / 0.4, 1.0)
         title_color = lerp_color(BG, HDR, title_t)
         ts = F['xl'].render("PS2 Picker", True, title_color)
-        screen.blit(ts, ts.get_rect(center=(W // 2, H // 2 - 30)))
+        screen.blit(ts, ts.get_rect(center=(W // 2, H // 2 - scaled(30))))
 
         # Subtitle fade-in (0.2 -> 0.6)
         sub_t = max(0.0, min((t - 0.2) / 0.4, 1.0))
         sub_color = lerp_color(BG, HINT, sub_t)
         ss = F['md'].render("Goon Squad Canada", True, sub_color)
-        screen.blit(ss, ss.get_rect(center=(W // 2, H // 2 + 10)))
+        screen.blit(ss, ss.get_rect(center=(W // 2, H // 2 + scaled(10))))
 
         # Accent line sweep (0.3 -> 0.7)
         line_t = max(0.0, min((t - 0.3) / 0.4, 1.0))
-        line_w = int((W - 100) * line_t)
+        line_w = int((W - scaled(100)) * line_t)
         if line_w > 0:
             lx = (W - line_w) // 2
-            pygame.draw.line(screen, ACCENT, (lx, H // 2 + 35),
-                             (lx + line_w, H // 2 + 35), 2)
+            pygame.draw.line(screen, ACCENT, (lx, H // 2 + scaled(35)),
+                             (lx + line_w, H // 2 + scaled(35)), 2)
 
         # Phase 2: after animation, show prompt
         if not animating:
@@ -1988,7 +2005,7 @@ def show_splash():
                 prompt_color = lerp_color(BG, TXT, pulse)
 
             ps = F['md'].render(prompt, True, prompt_color)
-            screen.blit(ps, ps.get_rect(center=(W // 2, H // 2 + 65)))
+            screen.blit(ps, ps.get_rect(center=(W // 2, H // 2 + scaled(65))))
 
         pygame.display.flip()
         clock.tick(60)
@@ -2018,12 +2035,12 @@ def show_welcome_back(user):
         wb_t = min(t / 0.3, 1.0)
         wb_color = lerp_color(BG, HDR, wb_t)
         ws = F['xl'].render("Welcome Back", True, wb_color)
-        screen.blit(ws, ws.get_rect(center=(W // 2, H // 2 - 20)))
+        screen.blit(ws, ws.get_rect(center=(W // 2, H // 2 - scaled(20))))
 
         name_t = max(0.0, min((t - 0.15) / 0.3, 1.0))
         name_color = lerp_color(BG, TXT_SEL, name_t)
         ns = F['lg'].render(user, True, name_color)
-        screen.blit(ns, ns.get_rect(center=(W // 2, H // 2 + 15)))
+        screen.blit(ns, ns.get_rect(center=(W // 2, H // 2 + scaled(15))))
 
         if t > 0.75:
             fade_t = (t - 0.75) / 0.25
