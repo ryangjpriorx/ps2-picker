@@ -8,13 +8,14 @@
      python3 ps2-checker.py --check-only  Check deps, don't launch
 """
 
-import os, sys, platform, shutil, subprocess, importlib.util
+import os, sys, platform, shutil, subprocess, importlib.util, json, string
 
 # ═══ Platform Detection ═════════════════════════════════════════
 
 IS_WINDOWS = platform.system() == 'Windows'
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MAIN_APP = os.path.join(SCRIPT_DIR, 'ps2-picker.py')
+CHECKER_CONFIG = os.path.join(os.path.expanduser('~'), '.ps2-picker', 'checker.json')
 
 
 def detect_distro():
@@ -92,10 +93,97 @@ def check_python_module(module_name):
     return importlib.util.find_spec(module_name) is not None
 
 
+def load_checker_config():
+    """Load saved checker config (custom paths, etc)."""
+    if os.path.exists(CHECKER_CONFIG):
+        try:
+            with open(CHECKER_CONFIG) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_checker_config(cfg):
+    """Save checker config to disk."""
+    os.makedirs(os.path.dirname(CHECKER_CONFIG), exist_ok=True)
+    with open(CHECKER_CONFIG, 'w') as f:
+        json.dump(cfg, f, indent=2)
+
+
+def _get_windows_drives():
+    """Get list of available drive letters on Windows."""
+    drives = []
+    for letter in string.ascii_uppercase:
+        drive = f"{letter}:\\"
+        if os.path.exists(drive):
+            drives.append(drive)
+    return drives
+
+
+def _scan_for_retroarch():
+    """Deep scan for retroarch.exe on Windows. Returns path or None."""
+    if not IS_WINDOWS:
+        return None
+
+    pf = os.environ.get('PROGRAMFILES', '')
+    pf86 = os.environ.get('PROGRAMFILES(X86)', '')
+    home = os.path.expanduser('~')
+    appdata = os.environ.get('APPDATA', '')
+    localappdata = os.environ.get('LOCALAPPDATA', '')
+
+    # Ordered list of likely locations
+    candidates = [
+        # Standard installs
+        os.path.join(pf, 'RetroArch', 'retroarch.exe'),
+        os.path.join(pf86, 'RetroArch', 'retroarch.exe'),
+        os.path.join(pf, 'RetroArch-Win64', 'retroarch.exe'),
+        os.path.join(pf86, 'RetroArch-Win64', 'retroarch.exe'),
+        # AppData locations
+        os.path.join(appdata, 'RetroArch', 'retroarch.exe'),
+        os.path.join(localappdata, 'RetroArch', 'retroarch.exe'),
+        # User folders
+        os.path.join(home, 'RetroArch', 'retroarch.exe'),
+        os.path.join(home, 'RetroArch-Win64', 'retroarch.exe'),
+        os.path.join(home, 'Downloads', 'RetroArch', 'retroarch.exe'),
+        os.path.join(home, 'Downloads', 'RetroArch-Win64', 'retroarch.exe'),
+        os.path.join(home, 'Desktop', 'RetroArch', 'retroarch.exe'),
+        os.path.join(home, 'Desktop', 'RetroArch-Win64', 'retroarch.exe'),
+    ]
+
+    # Check all candidates first (fast)
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return p
+
+    # Scan drive roots for common portable locations
+    for drive in _get_windows_drives():
+        for folder in ['RetroArch', 'RetroArch-Win64', 'Emulators\\RetroArch',
+                       'Games\\RetroArch', 'Emulation\\RetroArch']:
+            p = os.path.join(drive, folder, 'retroarch.exe')
+            if os.path.isfile(p):
+                return p
+
+    return None
+
+
 def check_command(cmd):
-    """Check if a command is available on PATH or common locations."""
+    """Check if a command is available on PATH, common locations, or saved config."""
+    # Check saved custom path first
+    cfg = load_checker_config()
+    custom_paths = cfg.get('custom_paths', {})
+    if cmd in custom_paths:
+        saved = custom_paths[cmd]
+        if os.path.isfile(saved):
+            return True
+        # Saved path is stale — remove it
+        del custom_paths[cmd]
+        cfg['custom_paths'] = custom_paths
+        save_checker_config(cfg)
+
     if shutil.which(cmd):
         return True
+
     if IS_WINDOWS:
         pf = os.environ.get('PROGRAMFILES', '')
         pf86 = os.environ.get('PROGRAMFILES(X86)', '')
@@ -106,15 +194,62 @@ def check_command(cmd):
                 os.path.join(pf86, '7-Zip', '7z.exe'),
             ]
         elif cmd == 'retroarch':
-            extras = [
-                os.path.join(pf, 'RetroArch', 'retroarch.exe'),
-                os.path.join(pf86, 'RetroArch', 'retroarch.exe'),
-                os.path.join(pf, 'RetroArch-Win64', 'retroarch.exe'),
-            ]
+            # Use deep scan
+            found = _scan_for_retroarch()
+            if found:
+                # Auto-save discovered path
+                custom_paths[cmd] = found
+                cfg['custom_paths'] = custom_paths
+                save_checker_config(cfg)
+                return True
         for p in extras:
             if p and os.path.isfile(p):
                 return True
     return False
+
+
+def get_saved_path(cmd):
+    """Get the saved/discovered path for a command, if any."""
+    cfg = load_checker_config()
+    return cfg.get('custom_paths', {}).get(cmd)
+
+
+def prompt_for_custom_path(dep_name):
+    """Ask the user to provide a custom path for a dependency."""
+    print()
+    print(f"  {yellow('?')}  {bold(dep_name)} was not found automatically.")
+    print(f"     If it's installed in a custom location, enter the full path")
+    print(f"     to the executable (or press Enter to skip):")
+    print()
+    try:
+        path = input(f"     Path: ").strip().strip('"').strip("'")
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+    if not path:
+        return None
+
+    # Accept either the exe directly or a folder containing it
+    if os.path.isdir(path):
+        exe = os.path.join(path, f"{dep_name}.exe" if IS_WINDOWS else dep_name)
+        if os.path.isfile(exe):
+            path = exe
+        else:
+            print(f"     {red('✗')}  Could not find {dep_name} in that folder.")
+            return None
+
+    if os.path.isfile(path):
+        # Save it
+        cfg = load_checker_config()
+        custom = cfg.get('custom_paths', {})
+        custom[dep_name] = path
+        cfg['custom_paths'] = custom
+        save_checker_config(cfg)
+        print(f"     {green('✓')}  Found! Path saved for future runs.")
+        return path
+    else:
+        print(f"     {red('✗')}  File not found: {path}")
+        return None
 
 
 # ═══ Install Commands Database ══════════════════════════════════
@@ -235,7 +370,7 @@ def print_header(pretty_name, distro):
     print(bold("-" * 60))
 
 
-def print_dep_result(name, description, installed, install_cmd):
+def print_dep_result(name, description, installed, install_cmd, found_path=None):
     """Print a single dependency result."""
     if installed:
         status = green("✓ INSTALLED")
@@ -244,6 +379,8 @@ def print_dep_result(name, description, installed, install_cmd):
 
     print(f"  {status}  {bold(name)}")
     print(f"           {dim(description)}")
+    if found_path:
+        print(f"           {dim('Found at: ' + found_path)}")
     if not installed:
         print(f"           {yellow('Install:')}  {install_cmd}")
     print()
@@ -315,8 +452,9 @@ def main():
     # Display results
     print_header(pretty, distro)
     for dep in deps:
+        found_path = get_saved_path(dep['name']) if dep['installed'] else None
         print_dep_result(dep['name'], dep['description'],
-                         dep['installed'], dep['install_cmd'])
+                         dep['installed'], dep['install_cmd'], found_path)
 
     missing = [d for d in deps if not d['installed']]
     required_missing = [d for d in missing if d['required']]
@@ -324,16 +462,44 @@ def main():
 
     print_footer(len(missing), len(deps))
 
+    # Prompt for custom paths on missing deps that support it
+    promptable = ('retroarch', '7z')  # deps that can be in custom locations
+    if missing:
+        resolved = []
+        for d in missing:
+            if d['name'] in promptable:
+                result = prompt_for_custom_path(d['name'])
+                if result:
+                    d['installed'] = True
+                    resolved.append(d)
+
+        if resolved:
+            # Re-display updated status
+            print()
+            print(bold("-" * 60))
+            print(f"  {cyan('Updated results:')}") 
+            print()
+            for dep in deps:
+                found_path = get_saved_path(dep['name']) if dep['installed'] else None
+                print_dep_result(dep['name'], dep['description'],
+                                 dep['installed'], dep['install_cmd'], found_path)
+
+            # Recalculate missing
+            missing = [d for d in deps if not d['installed']]
+            required_missing = [d for d in missing if d['required']]
+            optional_missing = [d for d in missing if not d['required']]
+            print_footer(len(missing), len(deps))
+
     # Show optional warnings
     if optional_missing and not required_missing:
         for d in optional_missing:
-            print(f"  {yellow('⚠')}  {d['name']} is optional but recommended.")
+            print(f"  {yellow(chr(9888))}  {d['name']} is optional but recommended.")
             print(f"     You can still launch, but some features won't work.")
             print()
 
     # Check if main app file exists
     if not os.path.exists(MAIN_APP):
-        print(f"  {red('✗')}  Main app not found: {MAIN_APP}")
+        print(f"  {red(chr(10007))}  Main app not found: {MAIN_APP}")
         print(f"     Place ps2-picker.py in the same folder as this script.")
         print()
         wait_for_exit()
