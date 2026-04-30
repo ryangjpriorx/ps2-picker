@@ -876,6 +876,10 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN and entries:
                     sel = min(len(entries) - 1, sel + 1); play_sfx('navigate')
+                if ev.key == pygame.K_LEFT or ev.key == pygame.K_PAGEUP:
+                    sel = max(0, sel - VIS); play_sfx('navigate')
+                if (ev.key == pygame.K_RIGHT or ev.key == pygame.K_PAGEDOWN) and entries:
+                    sel = min(len(entries) - 1, sel + VIS); play_sfx('navigate')
                 if ev.key == pygame.K_RETURN and entries:
                     full = os.path.join(current, entries[sel])
                     if sel < n_dirs:
@@ -946,15 +950,24 @@ def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if hy == -1 and entries:
                     sel = min(len(entries) - 1, sel + 1); play_sfx('navigate')
+                if hx == -1:
+                    sel = max(0, sel - VIS); play_sfx('navigate')
+                if hx == 1 and entries:
+                    sel = min(len(entries) - 1, sel + VIS); play_sfx('navigate')
 
         # Analog stick
         if joy is not None and entries and now - last_joy > DPAD_DELAY / 1000:
             moved = False
             ya = joy.get_axis(1)
+            xa = joy.get_axis(0)
             if ya < -0.5:
                 sel = max(0, sel - 1); moved = True
             elif ya > 0.5:
                 sel = min(len(entries) - 1, sel + 1); moved = True
+            if xa < -0.5:
+                sel = max(0, sel - VIS); moved = True
+            elif xa > 0.5:
+                sel = min(len(entries) - 1, sel + VIS); moved = True
             if moved:
                 play_sfx('navigate'); last_joy = now
 
