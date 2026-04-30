@@ -288,22 +288,9 @@ def init_display():
     }
 
     joy = None
-    deadline = time.time() + 5
-    clk = pygame.time.Clock()
-    while time.time() < deadline:
-        pygame.joystick.quit()
-        pygame.joystick.init()
-        if pygame.joystick.get_count() > 0:
-            joy = pygame.joystick.Joystick(0)
-            joy.init()
-            break
-        for ev in pygame.event.get():
-            pass
-        scr.fill(BG)
-        msg = fonts['lg'].render("Waiting for controller...", True, HDR)
-        scr.blit(msg, msg.get_rect(center=(w // 2, h // 2)))
-        pygame.display.flip()
-        clk.tick(10)
+    if pygame.joystick.get_count() > 0:
+        joy = pygame.joystick.Joystick(0)
+        joy.init()
 
     return scr, w, h, fonts, joy
 
@@ -1248,23 +1235,31 @@ def main():
 # ═══ Splash screen ══════════════════════════════════════════════
 
 def show_splash():
-    """Animated boot splash screen with fade-in title and accent sweep."""
-    duration = 2.5
+    """Animated boot splash that flows into 'Press any button to start'."""
+    global joy
+    ANIM_DUR = 2.5
     start = time.time()
 
     while True:
         elapsed = time.time() - start
-        if elapsed >= duration:
-            break
+        t = min(elapsed / ANIM_DUR, 1.0)
+        animating = elapsed < ANIM_DUR
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-            if ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
+            if not animating and ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
+                play_sfx('select')
                 return
 
-        t = elapsed / duration
+        if not animating and joy is None:
+            pygame.joystick.quit()
+            pygame.joystick.init()
+            if pygame.joystick.get_count() > 0:
+                joy = pygame.joystick.Joystick(0)
+                joy.init()
+
         screen.fill(BG)
 
         title_t = min(t / 0.4, 1.0)
@@ -1284,12 +1279,16 @@ def show_splash():
             pygame.draw.line(screen, ACCENT, (lx, H // 2 + 35),
                              (lx + line_w, H // 2 + 35), 2)
 
-        if t > 0.8:
-            fade_t = (t - 0.8) / 0.2
-            overlay = pygame.Surface((W, H))
-            overlay.fill(BG)
-            overlay.set_alpha(int(255 * fade_t))
-            screen.blit(overlay, (0, 0))
+        if not animating:
+            pulse = 0.4 + 0.6 * abs(math.sin(elapsed * 2.5))
+            if joy is None:
+                prompt = "Waiting for controller..."
+                prompt_color = lerp_color(BG, HINT, pulse)
+            else:
+                prompt = "Press any button to start"
+                prompt_color = lerp_color(BG, TXT, pulse)
+            ps = F['md'].render(prompt, True, prompt_color)
+            screen.blit(ps, ps.get_rect(center=(W // 2, H // 2 + 65)))
 
         pygame.display.flip()
         clock.tick(60)
