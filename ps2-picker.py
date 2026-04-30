@@ -9,18 +9,102 @@ os.environ['DISPLAY'] = ':0'
 warnings.filterwarnings('ignore')
 import pygame
 
-# ═══ Configuration ══════════════════════════════════════════════
-ROM_DIR = "/mnt/romm/romm/library/roms/ps2"
-CACHE_DIR = "/mnt/romm/romm/cache"
-LOCAL_CACHE_DIR = os.path.expanduser("~/ps2-cache")
-LOCAL_CACHE_MANIFEST = os.path.join(LOCAL_CACHE_DIR, "manifest.json")
-MAX_CACHED_GAMES = 3
-CORE = os.path.expanduser("~/.config/retroarch/cores/pcsx2_libretro.so")
+# ═══ Application Paths ══════════════════════════════════════════
+APP_DIR = os.path.expanduser("~/.ps2-picker")
+GLOBAL_CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 USERS_DIR = os.path.expanduser("~/ps2-users")
 EXTS = ('.zip', '.7z', '.iso', '.chd')
 GAME_EXTS = ('iso', 'bin', 'chd', 'cue')
 MEMCARD_FILES = ('Mcd001.ps2', 'Mcd002.ps2')
 
+# ═══ Default Configuration ══════════════════════════════════════
+DEFAULT_CONFIG = {
+    "rom_dir": "",
+    "local_cache_dir": os.path.expanduser("~/ps2-cache"),
+    "max_cached_games": 3,
+    "core_path": "",
+    "volume": 0.5,
+    "muted": False,
+    "setup_complete": False,
+}
+
+# ═══ Configuration System ══════════════════════════════════════
+active_cfg = dict(DEFAULT_CONFIG)
+games = []
+
+
+def load_global_config():
+    """Load global config, merging with defaults for any missing keys."""
+    cfg = dict(DEFAULT_CONFIG)
+    if os.path.exists(GLOBAL_CONFIG_PATH):
+        try:
+            with open(GLOBAL_CONFIG_PATH) as f:
+                saved = json.load(f)
+            cfg.update(saved)
+        except Exception:
+            pass
+    return cfg
+
+
+def save_global_config(cfg):
+    """Save global config to disk."""
+    os.makedirs(APP_DIR, exist_ok=True)
+    with open(GLOBAL_CONFIG_PATH, 'w') as f:
+        json.dump(cfg, f, indent=2)
+
+
+def load_user_settings(username):
+    """Load per-user settings overrides from user meta."""
+    meta = get_user_meta(username)
+    return meta.get("settings", {})
+
+
+def save_user_settings(username, settings):
+    """Save per-user settings overrides to user meta."""
+    meta = get_user_meta(username)
+    meta["settings"] = settings
+    save_user_meta(username, meta)
+
+
+def apply_user_settings(username):
+    """Merge global config with user overrides into active_cfg."""
+    global active_cfg
+    active_cfg = load_global_config()
+    user_settings = load_user_settings(username)
+    active_cfg.update(user_settings)
+    apply_volume()
+    reload_games()
+
+
+def apply_volume():
+    """Apply current volume/mute to all SFX objects."""
+    vol = 0.0 if active_cfg.get("muted", False) else active_cfg.get("volume", 0.5)
+    for s in SFX.values():
+        s.set_volume(vol)
+
+
+def needs_first_time_setup():
+    """Check if first-time setup is needed."""
+    cfg = load_global_config()
+    if not cfg.get("setup_complete", False):
+        return True
+    return False
+
+
+def reload_games():
+    """Refresh the game list from active config rom_dir."""
+    global games
+    rom_dir = active_cfg.get("rom_dir", "")
+    if rom_dir and os.path.isdir(rom_dir):
+        games = sorted(
+            [f for f in os.listdir(rom_dir) if f.lower().endswith(EXTS)],
+            key=str.lower
+        )
+    else:
+        games = []
+
+
+# ═══ Memcard directory detection ════════════════════════════════
 
 def find_memcard_dir():
     for d in [
@@ -51,10 +135,10 @@ ACCENT   = (147, 51, 234)
 DANGER   = (200, 60, 60)
 KEY_BG   = (40, 18, 65)
 KEY_SEL  = (120, 50, 180)
+SUCCESS  = (50, 180, 80)
 
+os.makedirs(APP_DIR, exist_ok=True)
 os.makedirs(USERS_DIR, exist_ok=True)
-os.makedirs(CACHE_DIR, exist_ok=True)
-os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
 
 
 # ═══ Color / animation helpers ══════════════════════════════════
@@ -71,6 +155,7 @@ def lerp_color(c1, c2, t):
 
 # ═══ Procedural sound effects ═══════════════════════════════════
 SFX = {}
+
 
 def _gen_tone(freq, duration_ms, volume=0.3, sample_rate=22050):
     """Generate a sine-wave tone as a pygame Sound."""
@@ -123,10 +208,13 @@ def init_sounds():
         'launch':   _gen_sweep(500, 1400, 250, 0.22),
         'type':     _gen_tone(1000, 25, 0.08),
     }
+    apply_volume()
 
 
 def play_sfx(name):
-    """Play a named sound effect (safe no-op if sounds unavailable)."""
+    """Play a named sound effect (respects volume/mute)."""
+    if active_cfg.get("muted", False):
+        return
     s = SFX.get(name)
     if s:
         s.play()
@@ -220,11 +308,6 @@ def save_memcard(user, card):
 
 
 # ═══ ROM list ═══════════════════════════════════════════════════
-games = sorted(
-    [f for f in os.listdir(ROM_DIR) if f.lower().endswith(EXTS)],
-    key=str.lower
-) if os.path.isdir(ROM_DIR) else []
-
 
 def strip_ext(name):
     for e in EXTS:
@@ -381,76 +464,91 @@ def draw_progress(game_name, progress, status="Extracting"):
     pygame.display.flip()
 
 
-# ═══ On-screen keyboard ════════════════════════════════════════
-
-KB_ROWS_LOWER = [
-    list("abcdefghij"),
-    list("klmnopqrst"),
-    list("uvwxyz0123"),
-    list("456789_- ") + ["\u2190", "\u2713"],
-]
-KB_ROWS_UPPER = [
-    list("ABCDEFGHIJ"),
-    list("KLMNOPQRST"),
-    list("UVWXYZ0123"),
-    list("456789_- ") + ["\u2190", "\u2713"],
-]
-KB_COLS = 10
-KB_NROWS = len(KB_ROWS_LOWER)
-
-
-def on_screen_keyboard(prompt):
-    """Blocking on-screen keyboard. Returns string or None if cancelled."""
-    text = ""
-    kx, ky = 0, 0
-    last_joy = 0
-    caps_lock = False
-    shift = False
-
-    while True:
-        upper = caps_lock ^ shift
-        kb_rows = KB_ROWS_UPPER if upper else KB_ROWS_LOWER
-        now = pygame.time.get_ticks()
+def draw_toast(msg, color=SUCCESS, duration=1.2):
+    """Show a brief toast notification at the bottom of the screen."""
+    start = time.time()
+    while time.time() - start < duration:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                return None
+                return
+        t = (time.time() - start) / duration
+        alpha = int(255 * (1 - t) if t > 0.7 else 255)
+        overlay = pygame.Surface((W, 40))
+        overlay.fill(color)
+        overlay.set_alpha(alpha)
+        screen.blit(overlay, (0, H - 40))
+        ts = F['md_b'].render(msg, True, BG)
+        ts.set_alpha(alpha)
+        screen.blit(ts, ts.get_rect(center=(W // 2, H - 20)))
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _wait_any_button():
+    """Block until any button/key is pressed."""
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
+                return
+        clock.tick(30)
+
+
+
+# ═══ On-Screen Keyboard ════════════════════════════════════════
+
+def on_screen_keyboard(prompt="Enter Text"):
+    """Full on-screen keyboard with controller support.
+       Returns entered text or None if cancelled."""
+    kb_rows = [
+        list("ABCDEFGHIJ"),
+        list("KLMNOPQRST"),
+        list("UVWXYZ0123"),
+        list("456789.-_ "),
+        list("/!@#\u2713\u2190    "),
+    ]
+    KB_COLS = 10
+    KB_NROWS = len(kb_rows)
+    kx, ky = 0, 0
+    text = ""
+    last_joy = 0
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     play_sfx('back'); return None
                 if ev.key == pygame.K_RETURN:
                     if text.strip():
-                        return text.strip()
+                        play_sfx('select'); return text.strip()
                 if ev.key == pygame.K_BACKSPACE:
-                    text = text[:-1]
+                    text = text[:-1]; play_sfx('type')
                 elif ev.unicode and ev.unicode.isprintable():
-                    if len(text) < 20:
-                        text += ev.unicode
+                    if len(text) < 40:
+                        text += ev.unicode; play_sfx('type')
             if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0:  # A = type selected char
+                    ch = kb_rows[ky][kx]
+                    if ch == "\u2713":
+                        if text.strip():
+                            play_sfx('select'); return text.strip()
+                    elif ch == "\u2190":
+                        text = text[:-1]; play_sfx('type')
+                    elif ch == " ":
+                        if len(text) < 40:
+                            text += " "; play_sfx('type')
+                    else:
+                        if len(text) < 40:
+                            text += ch; play_sfx('type')
                 if ev.button == 1:  # B = cancel
                     play_sfx('back'); return None
                 if ev.button == 7:  # Start = confirm
                     if text.strip():
                         play_sfx('select'); return text.strip()
-                if ev.button == 9:  # L3 = shift (one char)
-                    shift = not shift
-                if ev.button in (8, 10, 11):  # R3 = caps lock
-                    caps_lock = not caps_lock
-                    shift = False
-                if ev.button == 0:  # A = type selected char
-                    ch = kb_rows[ky][kx]
-                    if ch == "\u2713":
-                        if text.strip():
-                            return text.strip()
-                    elif ch == "\u2190":
-                        text = text[:-1]
-                    elif ch == " ":
-                        if len(text) < 20:
-                            text += " "
-                    else:
-                        if len(text) < 20:
-                            text += ch
-                            if shift:
-                                shift = False
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
@@ -463,95 +561,69 @@ def on_screen_keyboard(prompt):
                     kx = (kx + 1) % KB_COLS; play_sfx('navigate')
 
         # Analog stick
-        if joy is not None and now - last_joy > DPAD_DELAY:
-            ya = joy.get_axis(1)
-            xa = joy.get_axis(0)
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
             moved = False
-            if ya < -0.5:
-                ky = (ky - 1) % KB_NROWS; moved = True
-            elif ya > 0.5:
-                ky = (ky + 1) % KB_NROWS; moved = True
-            if xa < -0.5:
-                kx = (kx - 1) % KB_COLS; moved = True
-            elif xa > 0.5:
-                kx = (kx + 1) % KB_COLS; moved = True
+            xa = joy.get_axis(0)
+            ya = joy.get_axis(1)
+            if abs(xa) > 0.5:
+                kx = (kx + (1 if xa > 0 else -1)) % KB_COLS; moved = True
+            if abs(ya) > 0.5:
+                ky = (ky + (1 if ya > 0 else -1)) % KB_NROWS; moved = True
             if moved:
-                last_joy = now
+                play_sfx('navigate'); last_joy = now
 
-        # Draw
         screen.fill(BG)
+        # Prompt
         ps = F['lg'].render(prompt, True, HDR)
-        screen.blit(ps, ps.get_rect(center=(W // 2, 30)))
-        field_w = int(W * 0.7)
-        field_x = (W - field_w) // 2
-        pygame.draw.rect(screen, BAR_BG, (field_x, 55, field_w, 30), border_radius=6)
-        pygame.draw.rect(screen, BAR_BORDER, (field_x, 55, field_w, 30), 2, border_radius=6)
-        cursor = text + "|" if (now // 500) % 2 == 0 else text
-        ts = F['md_b'].render(cursor, True, TXT_SEL)
-        screen.blit(ts, (field_x + 8, 61))
-
-        if caps_lock:
-            ind = F['sm'].render('CAPS', True, TXT_SEL)
-            screen.blit(ind, (field_x + field_w + 6, 61))
-        elif shift:
-            ind = F['sm'].render('SHIFT', True, TXT_SEL)
-            screen.blit(ind, (field_x + field_w + 6, 61))
-
-        cell_w = 52
-        cell_h = 32
-        grid_w = KB_COLS * cell_w
-        gx_start = (W - grid_w) // 2
-        gy_start = 105
-
-        for ry in range(KB_NROWS):
-            for rx in range(KB_COLS):
-                x = gx_start + rx * cell_w
-                y = gy_start + ry * cell_h
-                ch = kb_rows[ry][rx]
-                selected = (rx == kx and ry == ky)
-                bg = KEY_SEL if selected else KEY_BG
-                pygame.draw.rect(screen, bg, (x + 2, y + 2, cell_w - 4, cell_h - 4), border_radius=4)
-                if selected:
-                    pygame.draw.rect(screen, TXT_SEL, (x + 2, y + 2, cell_w - 4, cell_h - 4), 2, border_radius=4)
-                if ch == "\u2190":
-                    label = "DEL"
-                elif ch == "\u2713":
-                    label = "OK"
-                elif ch == " ":
-                    label = "SPC"
-                else:
-                    label = ch
-                cs = F['md_b' if selected else 'md'].render(label, True, TXT_SEL if selected else TXT)
-                screen.blit(cs, cs.get_rect(center=(x + cell_w // 2, y + cell_h // 2)))
-
-        hint = F['sm'].render('A: Type | B: Cancel | Start: Confirm | L3: Shift | R3: Caps', True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
-
+        screen.blit(ps, ps.get_rect(center=(W // 2, 20)))
+        # Text field
+        tf_rect = pygame.Rect(20, 44, W - 40, 28)
+        pygame.draw.rect(screen, KEY_BG, tf_rect, border_radius=6)
+        pygame.draw.rect(screen, ACCENT, tf_rect, 1, border_radius=6)
+        display_text = text + "|"
+        ts = F['md'].render(display_text, True, TXT_SEL)
+        screen.blit(ts, (tf_rect.x + 8, tf_rect.y + 5))
+        # Keyboard grid
+        kw = (W - 40) // KB_COLS
+        kh = 32
+        ky_start = 80
+        for r in range(KB_NROWS):
+            for c in range(KB_COLS):
+                rx = 20 + c * kw
+                ry = ky_start + r * (kh + 4)
+                rect = pygame.Rect(rx, ry, kw - 4, kh)
+                is_sel = (r == ky and c == kx)
+                bg_c = KEY_SEL if is_sel else KEY_BG
+                pygame.draw.rect(screen, bg_c, rect, border_radius=4)
+                if is_sel:
+                    pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=4)
+                ch = kb_rows[r][c]
+                color = TXT_SEL if is_sel else TXT
+                if ch == "\u2713":
+                    color = SUCCESS if is_sel else (50, 140, 60)
+                elif ch == "\u2190":
+                    color = DANGER if is_sel else (160, 50, 50)
+                cs = F['md_b'].render(ch, True, color)
+                screen.blit(cs, cs.get_rect(center=rect.center))
+        # Hints
+        hint = F['sm'].render("[A] Type   [B] Cancel   [Start] Confirm   Physical keyboard works too", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
         pygame.display.flip()
         clock.tick(30)
 
 
-# ═══ Input helpers ══════════════════════════════════════════════
+# ═══ Confirm Dialog ═════════════════════════════════════════════
 
-def check_cancel():
-    pygame.event.pump()
-    for ev in pygame.event.get():
-        if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
-            return True
-        if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-            return True
-    return False
-
-
-def confirm_dialog(msg):
-    """Show Yes/No dialog. Returns True if confirmed."""
-    sel = 1  # default No
+def confirm_dialog(message):
+    """Yes/No confirm dialog. Returns True if user selected Yes."""
+    sel = 0  # 0 = Yes, 1 = No
     last_joy = 0
+
     while True:
-        now = pygame.time.get_ticks()
+        now = time.time()
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                return False
+                pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     play_sfx('back'); return False
@@ -568,39 +640,603 @@ def confirm_dialog(msg):
                 hx, hy = ev.value
                 if hx != 0:
                     sel = 1 - sel; play_sfx('navigate')
-        if joy is not None and now - last_joy > DPAD_DELAY:
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
             xa = joy.get_axis(0)
             if abs(xa) > 0.5:
                 sel = 1 - sel; play_sfx('navigate')
                 last_joy = now
 
         screen.fill(BG)
-        ms = F['lg'].render(msg, True, HDR)
+        ms = F['lg'].render(message, True, HDR)
         screen.blit(ms, ms.get_rect(center=(W // 2, H // 3)))
-        btn_w, btn_h = 100, 36
-        gap = 40
-        y = H // 2 + 10
         for i, label in enumerate(["Yes", "No"]):
-            x = W // 2 - btn_w - gap // 2 + i * (btn_w + gap)
-            bg = DANGER if (i == 0 and sel == 0) else (SEL_BG if sel == i else KEY_BG)
-            pygame.draw.rect(screen, bg, (x, y, btn_w, btn_h), border_radius=6)
-            if sel == i:
-                pygame.draw.rect(screen, TXT_SEL, (x, y, btn_w, btn_h), 2, border_radius=6)
-            ls = F['md_b'].render(label, True, TXT_SEL if sel == i else TXT)
-            screen.blit(ls, ls.get_rect(center=(x + btn_w // 2, y + btn_h // 2)))
-        hs = F['sm'].render("A: Select  |  B: Cancel", True, HINT)
-        screen.blit(hs, hs.get_rect(center=(W // 2, H - 25)))
+            bx = W // 2 + (i * 120 - 60)
+            rect = pygame.Rect(bx - 40, H // 2, 80, 32)
+            if i == sel:
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=6)
+                pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=6)
+            else:
+                pygame.draw.rect(screen, KEY_BG, rect, border_radius=6)
+            color = TXT_SEL if i == sel else TXT
+            ls = F['md_b'].render(label, True, color)
+            screen.blit(ls, ls.get_rect(center=rect.center))
+        hint = F['sm'].render("[A] Select   [B] Cancel", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
         pygame.display.flip()
         clock.tick(30)
 
 
-# ═══ Game launch (with local cache) ═══════════════════════════════
+# ═══ Number Input ═══════════════════════════════════════════════
+
+def number_input(prompt, current_val, min_val=1, max_val=99, step=1):
+    """Controller-friendly number input. Returns int or None."""
+    val = int(current_val)
+    last_joy = 0
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return None
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select'); return val
+                if ev.key == pygame.K_UP or ev.key == pygame.K_RIGHT:
+                    val = min(max_val, val + step); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN or ev.key == pygame.K_LEFT:
+                    val = max(min_val, val - step); play_sfx('navigate')
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0 or ev.button == 7:
+                    play_sfx('select'); return val
+                if ev.button == 1:
+                    play_sfx('back'); return None
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1 or hx == 1:
+                    val = min(max_val, val + step); play_sfx('navigate')
+                if hy == -1 or hx == -1:
+                    val = max(min_val, val - step); play_sfx('navigate')
+
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            moved = False
+            ya = joy.get_axis(1)
+            xa = joy.get_axis(0)
+            if ya < -0.5 or xa > 0.5:
+                val = min(max_val, val + step); moved = True
+            elif ya > 0.5 or xa < -0.5:
+                val = max(min_val, val - step); moved = True
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        screen.fill(BG)
+        ps = F['lg'].render(prompt, True, HDR)
+        screen.blit(ps, ps.get_rect(center=(W // 2, H // 3)))
+
+        # Value display with arrows
+        arrow_l = F['xl'].render("<", True, ACCENT)
+        arrow_r = F['xl'].render(">", True, ACCENT)
+        vs = F['xl'].render(str(val), True, TXT_SEL)
+        cx = W // 2
+        cy = H // 2
+        screen.blit(arrow_l, arrow_l.get_rect(center=(cx - 60, cy)))
+        screen.blit(vs, vs.get_rect(center=(cx, cy)))
+        screen.blit(arrow_r, arrow_r.get_rect(center=(cx + 60, cy)))
+
+        rng = F['sm'].render(f"Range: {min_val} - {max_val}", True, TXT_DIM)
+        screen.blit(rng, rng.get_rect(center=(W // 2, cy + 40)))
+
+        hint = F['sm'].render("[D-Pad] Adjust   [A] Confirm   [B] Cancel", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
+        pygame.display.flip()
+        clock.tick(30)
+
+
+# ═══ Volume Slider ══════════════════════════════════════════════
+
+def volume_slider(prompt="Volume", current_vol=0.5, muted=False):
+    """Interactive volume slider. Returns (volume_float, muted_bool) or None."""
+    vol = current_vol
+    is_muted = muted
+    last_joy = 0
+    STEP = 0.05
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return None
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select'); return (vol, is_muted)
+                if ev.key == pygame.K_RIGHT or ev.key == pygame.K_UP:
+                    vol = min(1.0, vol + STEP); is_muted = False; play_sfx('navigate')
+                if ev.key == pygame.K_LEFT or ev.key == pygame.K_DOWN:
+                    vol = max(0.0, vol - STEP); play_sfx('navigate')
+                if ev.key == pygame.K_m:
+                    is_muted = not is_muted; play_sfx('navigate')
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0 or ev.button == 7:
+                    play_sfx('select'); return (vol, is_muted)
+                if ev.button == 1:
+                    play_sfx('back'); return None
+                if ev.button == 2:  # X = toggle mute
+                    is_muted = not is_muted; play_sfx('navigate')
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hx == 1 or hy == 1:
+                    vol = min(1.0, vol + STEP); is_muted = False; play_sfx('navigate')
+                if hx == -1 or hy == -1:
+                    vol = max(0.0, vol - STEP); play_sfx('navigate')
+
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            moved = False
+            xa = joy.get_axis(0)
+            if xa > 0.5:
+                vol = min(1.0, vol + STEP); is_muted = False; moved = True
+            elif xa < -0.5:
+                vol = max(0.0, vol - STEP); moved = True
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        # Live preview volume
+        preview_vol = 0.0 if is_muted else vol
+        for s in SFX.values():
+            s.set_volume(preview_vol)
+
+        screen.fill(BG)
+        ps = F['lg'].render(prompt, True, HDR)
+        screen.blit(ps, ps.get_rect(center=(W // 2, H // 4)))
+
+        # Mute status
+        if is_muted:
+            ms = F['md_b'].render("MUTED", True, DANGER)
+        else:
+            pct = int(vol * 100)
+            ms = F['md_b'].render(f"Volume: {pct}%", True, TXT_SEL)
+        screen.blit(ms, ms.get_rect(center=(W // 2, H // 3)))
+
+        # Slider bar
+        bw = int(W * 0.6)
+        bh = 16
+        bx = (W - bw) // 2
+        by = H // 2
+        pygame.draw.rect(screen, BAR_BG, (bx, by, bw, bh), border_radius=8)
+        pygame.draw.rect(screen, BAR_BORDER, (bx, by, bw, bh), 1, border_radius=8)
+        if not is_muted and vol > 0:
+            fw = max(4, int((bw - 4) * vol))
+            pygame.draw.rect(screen, ACCENT, (bx + 2, by + 2, fw, bh - 4), border_radius=6)
+        # Slider knob
+        knob_x = bx + 2 + int((bw - 4) * vol)
+        pygame.draw.circle(screen, TXT_SEL, (knob_x, by + bh // 2), 10)
+
+        hint = F['sm'].render("[D-Pad] Adjust   [X] Mute/Unmute   [A] Confirm   [B] Cancel", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
+        pygame.display.flip()
+        clock.tick(30)
+
+
+
+# ═══ File Browser ═══════════════════════════════════════════════
+
+def file_browser(prompt="Select a folder", start_path="/", mode="folder"):
+    """Controller-driven file/folder browser.
+       mode='folder' = select folders, mode='file' = select files.
+       A = enter folder (or select file in file mode)
+       B = go up one level / cancel at root
+       X = select this folder (folder mode only)
+       Y = type a path manually
+       Returns selected path string or None if cancelled."""
+    current = os.path.expanduser(start_path)
+    if not os.path.isdir(current):
+        current = os.path.expanduser("~")
+    sel = 0
+    scroll = 0
+    last_joy = 0
+    VIS = (H - 100) // LINE_H
+
+    while True:
+        # Build directory listing
+        try:
+            raw = sorted(os.listdir(current), key=str.lower)
+        except PermissionError:
+            raw = []
+        dirs = [d for d in raw if os.path.isdir(os.path.join(current, d)) and not d.startswith('.')]
+        files = []
+        if mode == "file":
+            files = [f for f in raw if os.path.isfile(os.path.join(current, f)) and not f.startswith('.')]
+        entries = dirs + files
+        n_dirs = len(dirs)
+        sel = max(0, min(sel, len(entries) - 1)) if entries else 0
+
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back')
+                    parent = os.path.dirname(current)
+                    if parent != current:
+                        current = parent; sel = 0; scroll = 0
+                    else:
+                        return None
+                if ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN and entries:
+                    sel = min(len(entries) - 1, sel + 1); play_sfx('navigate')
+                if ev.key == pygame.K_RETURN and entries:
+                    full = os.path.join(current, entries[sel])
+                    if sel < n_dirs:
+                        current = full; sel = 0; scroll = 0; play_sfx('select')
+                    elif mode == "file":
+                        play_sfx('select'); return full
+                if ev.key == pygame.K_x or ev.key == pygame.K_SPACE:
+                    if mode == "folder":
+                        play_sfx('select'); return current
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0 and entries:  # A = enter folder / select file
+                    full = os.path.join(current, entries[sel])
+                    if sel < n_dirs:
+                        current = full; sel = 0; scroll = 0; play_sfx('select')
+                    elif mode == "file":
+                        play_sfx('select'); return full
+                if ev.button == 1:  # B = go up / cancel
+                    play_sfx('back')
+                    parent = os.path.dirname(current)
+                    if parent != current:
+                        current = parent; sel = 0; scroll = 0
+                    else:
+                        return None
+                if ev.button == 2:  # X = select this folder
+                    if mode == "folder":
+                        play_sfx('select'); return current
+                if ev.button == 3:  # Y = manual path input
+                    play_sfx('select')
+                    typed = on_screen_keyboard("Enter path manually")
+                    if typed and os.path.isdir(typed):
+                        current = typed; sel = 0; scroll = 0
+                    elif typed and os.path.isfile(typed) and mode == "file":
+                        return typed
+                    elif typed:
+                        play_sfx('error')
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1 and entries:
+                    sel = min(len(entries) - 1, sel + 1); play_sfx('navigate')
+
+        # Analog stick
+        if joy is not None and entries and now - last_joy > DPAD_DELAY / 1000:
+            moved = False
+            ya = joy.get_axis(1)
+            if ya < -0.5:
+                sel = max(0, sel - 1); moved = True
+            elif ya > 0.5:
+                sel = min(len(entries) - 1, sel + 1); moved = True
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        # Scroll
+        if sel < scroll:
+            scroll = sel
+        if sel >= scroll + VIS:
+            scroll = sel - VIS + 1
+
+        # Draw
+        screen.fill(BG)
+        ps = F['lg'].render(prompt, True, HDR)
+        screen.blit(ps, (12, 6))
+        # Current path
+        display_path = truncate(current, F['sm'], W - 24)
+        pp = F['sm'].render(display_path, True, ACCENT)
+        screen.blit(pp, (12, 30))
+        pygame.draw.line(screen, ACCENT, (10, 48), (W - 10, 48), 1)
+
+        # Entries
+        y = 52
+        for i in range(scroll, min(scroll + VIS, len(entries))):
+            ey = y + (i - scroll) * LINE_H
+            name = entries[i]
+            is_dir = i < n_dirs
+            is_sel = (i == sel)
+
+            if is_sel:
+                pygame.draw.rect(screen, SEL_BG, (6, ey, W - 12, LINE_H - 2), border_radius=4)
+
+            prefix = "[DIR] " if is_dir else "      "
+            display = truncate(prefix + name, F['md'], W - 30)
+            color = TXT_SEL if is_sel else (HDR if is_dir else TXT)
+            font = F['md_b'] if is_sel else F['md']
+            label = font.render(display, True, color)
+            screen.blit(label, (14, ey + 3))
+
+        if not entries:
+            es = F['md'].render("(empty folder)", True, TXT_DIM)
+            screen.blit(es, es.get_rect(center=(W // 2, H // 2)))
+
+        # Bottom hints
+        if mode == "folder":
+            hint_text = "[A] Open folder   [B] Go back   [X] Select this folder   [Y] Type path"
+        else:
+            hint_text = "[A] Open/Select   [B] Go back   [Y] Type path"
+        hint = F['sm'].render(hint_text, True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+        pygame.display.flip()
+        clock.tick(30)
+
+
+# ═══ First-Time Setup Wizard ═══════════════════════════════════
+
+def first_time_setup():
+    """Guided first-time setup wizard. Populates global config."""
+    global active_cfg
+    cfg = load_global_config()
+
+    # -- Step 1: Welcome --
+    waiting = True
+    while waiting:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
+                play_sfx('select'); waiting = False
+        screen.fill(BG)
+        ts = F['xl'].render("Welcome to PS2 Picker", True, HDR)
+        screen.blit(ts, ts.get_rect(center=(W // 2, H // 4)))
+        ss = F['md'].render("Let's get everything set up.", True, TXT)
+        screen.blit(ss, ss.get_rect(center=(W // 2, H // 4 + 35)))
+        ss2 = F['md'].render("This will only take a moment.", True, TXT_DIM)
+        screen.blit(ss2, ss2.get_rect(center=(W // 2, H // 4 + 60)))
+
+        steps_info = [
+            "1. Choose where your PS2 games are stored",
+            "2. Locate your RetroArch PS2 core",
+            "3. Set up game cache preferences",
+            "4. Adjust audio volume",
+            "5. Create your first profile",
+        ]
+        for i, step_text in enumerate(steps_info):
+            color = HINT if i > 0 else TXT_SEL
+            st = F['md'].render(step_text, True, color)
+            screen.blit(st, (40, H // 2 + i * 28))
+
+        hint = F['sm'].render("Press any button to begin", True, ACCENT)
+        pulse = 0.4 + 0.6 * abs(math.sin(time.time() * 2.5))
+        hint.set_alpha(int(255 * pulse))
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 25)))
+        pygame.display.flip()
+        clock.tick(30)
+
+    # -- Step 2: ROM directory --
+    draw_center_msg("Step 1 of 5", "Where are your PS2 games stored?",
+                    "Opening file browser...")
+    time.sleep(0.8)
+    rom_path = file_browser("Select your ROM/Games folder", start_path="/")
+    if rom_path:
+        cfg["rom_dir"] = rom_path
+    else:
+        typed = on_screen_keyboard("Enter ROM folder path")
+        if typed:
+            cfg["rom_dir"] = typed
+
+    # -- Step 3: Core path --
+    draw_center_msg("Step 2 of 5", "Locate your RetroArch PS2 core (.so file)",
+                    "Opening file browser...")
+    time.sleep(0.8)
+    default_cores = os.path.expanduser("~/.config/retroarch/cores")
+    core_start = default_cores if os.path.isdir(default_cores) else "/"
+    core_path = file_browser("Select PS2 core file (.so)", start_path=core_start, mode="file")
+    if core_path:
+        cfg["core_path"] = core_path
+    else:
+        typed = on_screen_keyboard("Enter core path")
+        if typed:
+            cfg["core_path"] = typed
+
+    # -- Step 4: Cache directory + max cached --
+    draw_center_msg("Step 3 of 5", "Game cache settings",
+                    "Games are extracted to a local cache for faster loading")
+    time.sleep(1.0)
+
+    default_cache = os.path.expanduser("~/ps2-cache")
+    use_default = confirm_dialog(f"Use default cache: {default_cache}?")
+    if use_default:
+        cfg["local_cache_dir"] = default_cache
+    else:
+        cache_path = file_browser("Select cache folder", start_path=os.path.expanduser("~"))
+        if cache_path:
+            cfg["local_cache_dir"] = cache_path
+
+    result = number_input("Max games to keep cached?",
+                          cfg.get("max_cached_games", 3), min_val=1, max_val=20)
+    if result is not None:
+        cfg["max_cached_games"] = result
+
+    # -- Step 5: Volume --
+    draw_center_msg("Step 4 of 5", "Set your preferred audio level", "")
+    time.sleep(0.6)
+    vol_result = volume_slider("Navigation Sound Volume",
+                               cfg.get("volume", 0.5),
+                               cfg.get("muted", False))
+    if vol_result is not None:
+        cfg["volume"], cfg["muted"] = vol_result
+
+    # -- Step 6: Create first user --
+    draw_center_msg("Step 5 of 5", "Create your profile", "")
+    time.sleep(0.6)
+    name = on_screen_keyboard("Enter your username")
+    if name and name.strip():
+        name = name.strip()
+        if name not in get_users():
+            create_user(name)
+
+    # -- Save --
+    cfg["setup_complete"] = True
+    save_global_config(cfg)
+    active_cfg = cfg
+    apply_volume()
+    reload_games()
+
+    # Confirmation
+    draw_center_msg("Setup Complete!", f"Found {len(games)} games",
+                    "Press any button to continue")
+    _wait_any_button()
+
+
+# ═══ Settings Menu ══════════════════════════════════════════════
+
+def settings_menu(username=None):
+    """Settings menu accessible from game picker. Edits per-user or global settings."""
+    items = [
+        ("Volume", "volume"),
+        ("ROM Folder", "rom_dir"),
+        ("RetroArch Core", "core_path"),
+        ("Cache Folder", "local_cache_dir"),
+        ("Max Cached Games", "max_cached_games"),
+        ("Back", "back"),
+    ]
+    sel = 0
+    last_joy = 0
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return
+                if ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN:
+                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select')
+                    _handle_setting(items[sel][1], username)
+                    if items[sel][1] == "back":
+                        return
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0:
+                    play_sfx('select')
+                    _handle_setting(items[sel][1], username)
+                    if items[sel][1] == "back":
+                        return
+                if ev.button == 1:
+                    play_sfx('back'); return
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1:
+                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
+
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            moved = False
+            ya = joy.get_axis(1)
+            if ya < -0.5:
+                sel = max(0, sel - 1); moved = True
+            elif ya > 0.5:
+                sel = min(len(items) - 1, sel + 1); moved = True
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        screen.fill(BG)
+        title = f"Settings - {username}" if username else "Global Settings"
+        draw_header(title, "[A] Edit   [B] Back")
+
+        y = 60
+        for i, (label, key) in enumerate(items):
+            is_sel = (i == sel)
+            rect = pygame.Rect(20, y, W - 40, 38)
+            if is_sel:
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=6)
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=6)
+
+            lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
+            screen.blit(lbl, (rect.x + 12, rect.y + 4))
+
+            if key not in ("back",):
+                val = active_cfg.get(key, "")
+                if key == "volume":
+                    if active_cfg.get("muted", False):
+                        val_str = "Muted"
+                    else:
+                        val_str = f"{int(active_cfg.get('volume', 0.5) * 100)}%"
+                elif key == "max_cached_games":
+                    val_str = str(val)
+                else:
+                    val_str = truncate(str(val), F['sm'], W // 2 - 20) if val else "(not set)"
+                vs = F['sm'].render(val_str, True, ACCENT if is_sel else TXT_DIM)
+                screen.blit(vs, (rect.right - vs.get_width() - 12, rect.y + 10))
+
+            y += 44
+
+        hint = F['sm'].render("Settings are saved per-user when logged in", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _handle_setting(key, username=None):
+    """Handle editing a single setting."""
+    if key == "back":
+        return
+    if key == "volume":
+        result = volume_slider("Volume",
+                               active_cfg.get("volume", 0.5),
+                               active_cfg.get("muted", False))
+        if result is not None:
+            active_cfg["volume"], active_cfg["muted"] = result
+            apply_volume()
+    elif key == "rom_dir":
+        start = active_cfg.get("rom_dir", "/")
+        result = file_browser("Select ROM/Games folder", start_path=start)
+        if result:
+            active_cfg["rom_dir"] = result
+            reload_games()
+    elif key == "core_path":
+        start = os.path.dirname(active_cfg.get("core_path", "")) or "/"
+        result = file_browser("Select PS2 core file (.so)", start_path=start, mode="file")
+        if result:
+            active_cfg["core_path"] = result
+    elif key == "local_cache_dir":
+        start = active_cfg.get("local_cache_dir", os.path.expanduser("~"))
+        result = file_browser("Select cache folder", start_path=start)
+        if result:
+            active_cfg["local_cache_dir"] = result
+    elif key == "max_cached_games":
+        result = number_input("Max cached games",
+                              active_cfg.get("max_cached_games", 3),
+                              min_val=1, max_val=20)
+        if result is not None:
+            active_cfg["max_cached_games"] = result
+
+    # Persist changes
+    if username:
+        gcfg = load_global_config()
+        overrides = {}
+        for k in ("volume", "muted", "rom_dir", "core_path", "local_cache_dir", "max_cached_games"):
+            if active_cfg.get(k) != gcfg.get(k):
+                overrides[k] = active_cfg[k]
+        save_user_settings(username, overrides)
+    else:
+        save_global_config(active_cfg)
+
+
+
+# ═══ Cache Management ══════════════════════════════════════════
 
 def load_cache_manifest():
-    """Load the cache manifest tracking extracted games."""
-    if os.path.exists(LOCAL_CACHE_MANIFEST):
+    cache_dir = active_cfg.get("local_cache_dir", os.path.expanduser("~/ps2-cache"))
+    p = os.path.join(cache_dir, "manifest.json")
+    if os.path.exists(p):
         try:
-            with open(LOCAL_CACHE_MANIFEST) as f:
+            with open(p) as f:
                 return json.load(f)
         except Exception:
             pass
@@ -608,36 +1244,34 @@ def load_cache_manifest():
 
 
 def save_cache_manifest(manifest):
-    """Save the cache manifest."""
-    with open(LOCAL_CACHE_MANIFEST, "w") as f:
+    cache_dir = active_cfg.get("local_cache_dir", os.path.expanduser("~/ps2-cache"))
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(os.path.join(cache_dir, "manifest.json"), 'w') as f:
         json.dump(manifest, f, indent=2)
 
 
 def evict_cached_picker():
     """Interactive picker to choose which cached game to remove when cache is full."""
+    max_cached = active_cfg.get("max_cached_games", 3)
     manifest = load_cache_manifest()
-    if len(manifest) < MAX_CACHED_GAMES:
+    if len(manifest) < max_cached:
         return True
 
-    # Sort by last_used (oldest first) and build display list
     entries = sorted(manifest.keys(),
                      key=lambda k: manifest[k].get("last_used", 0))
     sel = 0
     scroll = 0
-    VISIBLE = 6
-    DPAD_DELAY = 0.18
+    VIS = 6
     last_joy = 0
 
     while True:
         now = time.time()
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back')
-                    return False  # Cancel launch
+                    play_sfx('back'); return False
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN:
@@ -664,8 +1298,7 @@ def evict_cached_picker():
                         save_cache_manifest(manifest)
                         return True
                 if ev.button == 1:
-                    play_sfx('back')
-                    return False
+                    play_sfx('back'); return False
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
@@ -673,7 +1306,7 @@ def evict_cached_picker():
                 if hy == -1:
                     sel = min(len(entries) - 1, sel + 1); play_sfx('navigate')
 
-        if joy is not None and now - last_joy > DPAD_DELAY:
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
             moved = False
             ya = joy.get_axis(1)
             if ya < -0.5:
@@ -685,205 +1318,183 @@ def evict_cached_picker():
 
         if sel < scroll:
             scroll = sel
-        if sel >= scroll + VISIBLE:
-            scroll = sel - VISIBLE + 1
+        if sel >= scroll + VIS:
+            scroll = sel - VIS + 1
 
         screen.fill(BG)
-        draw_header("Cache Full", f"Select a game to remove ({len(entries)}/{MAX_CACHED_GAMES})")
+        draw_header("Cache Full", f"Select a game to remove ({len(entries)}/{max_cached})")
 
-        y = 70
-        for i in range(scroll, min(scroll + VISIBLE, len(entries))):
+        y = 60
+        for i in range(scroll, min(scroll + VIS, len(entries))):
             name = entries[i]
             is_sel = (i == sel)
             rect = pygame.Rect(20, y, W - 40, 44)
             if is_sel:
                 pygame.draw.rect(screen, SEL_BG, rect, border_radius=6)
             pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=6)
-
-            label = F['md'].render(name[:40], True, TXT_SEL if is_sel else TXT)
+            label = F['md'].render(truncate(name, F['md'], W - 120), True, TXT_SEL if is_sel else TXT)
             screen.blit(label, (rect.x + 12, rect.y + 6))
-
-            # Show how long ago it was last played
             last_used = manifest[name].get("last_used", 0)
             if last_used > 0:
                 age = time.time() - last_used
                 if age < 3600:
-                    age_str = f"{int(age/60)}m ago"
+                    age_str = f"{int(age / 60)}m ago"
                 elif age < 86400:
-                    age_str = f"{int(age/3600)}h ago"
+                    age_str = f"{int(age / 3600)}h ago"
                 else:
-                    age_str = f"{int(age/86400)}d ago"
+                    age_str = f"{int(age / 86400)}d ago"
                 age_s = F['sm'].render(age_str, True, TXT_DIM)
-                screen.blit(age_s, (rect.right - age_s.get_width() - 12, rect.y + 10))
-
+                screen.blit(age_s, (rect.right - age_s.get_width() - 12, rect.y + 14))
             y += 50
 
         hint = F['sm'].render("[A] Delete   [B] Cancel", True, HINT)
-        screen.blit(hint, hint.get_rect(center=(W // 2, H - 25)))
-
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 20)))
         pygame.display.flip()
         clock.tick(30)
 
 
-def touch_cache_entry(name, extract_dir):
-    """Update or create a cache entry with current timestamp."""
-    manifest = load_cache_manifest()
-    manifest[name] = {
-        "path": extract_dir,
-        "last_used": time.time()
-    }
-    save_cache_manifest(manifest)
-
-
-def find_cached_game(name):
-    """Check if a game is already cached. Returns game path or None."""
-    manifest = load_cache_manifest()
-    if name not in manifest:
-        return None
-    cache_path = manifest[name].get("path", "")
-    if not os.path.isdir(cache_path):
-        del manifest[name]
-        save_cache_manifest(manifest)
-        return None
-    for ext in GAME_EXTS:
-        matches = glob.glob(os.path.join(cache_path, "**", f"*.{ext}"), recursive=True)
-        if matches:
-            return matches[0]
-    # Directory exists but no game files found - remove stale entry
-    shutil.rmtree(cache_path, ignore_errors=True)
-    del manifest[name]
-    save_cache_manifest(manifest)
-    return None
-
+# ═══ Extract & Launch ══════════════════════════════════════════
 
 def extract_and_launch(game_file, user, card):
-    """Extract if needed (with cache), launch RetroArch, save memcard on exit.
-       Returns True to exit app, False to return to game menu."""
-    name = strip_ext(game_file)
-    path = os.path.join(ROM_DIR, game_file)
+    """Extract a game archive and launch via RetroArch."""
+    rom_dir = active_cfg.get("rom_dir", "")
+    cache_dir = active_cfg.get("local_cache_dir", os.path.expanduser("~/ps2-cache"))
+    core = active_cfg.get("core_path", "")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    manifest = load_cache_manifest()
+    game_key = strip_ext(game_file)
+    full_path = os.path.join(rom_dir, game_file)
+
+    # Check if already cached
+    if game_key in manifest:
+        cached = manifest[game_key]
+        game_path = cached.get("path", "")
+        if os.path.isdir(game_path):
+            for ext in GAME_EXTS:
+                found = glob.glob(os.path.join(game_path, f"*.{ext}"))
+                if found:
+                    manifest[game_key]["last_used"] = time.time()
+                    save_cache_manifest(manifest)
+                    load_memcard(user, card)
+                    _launch_retroarch(found[0], core)
+                    save_memcard(user, card)
+                    return True
+        del manifest[game_key]
+        save_cache_manifest(manifest)
+
+    # Not cached - evict if needed
+    if not evict_cached_picker():
+        return False
+
+    # Extract
+    dest = os.path.join(cache_dir, game_key)
+    os.makedirs(dest, exist_ok=True)
     lower = game_file.lower()
 
-    # Direct launch for bare ISO/CHD (no extraction needed)
-    if lower.endswith((".iso", ".chd")):
-        draw_progress(game_file, 1.0, "Launching")
-        pygame.time.wait(400)
-        pygame.quit()
-        subprocess.run(["retroarch", "-L", CORE, "--fullscreen", path])
-        save_memcard(user, card)
-        return True
+    if lower.endswith(('.zip', '.7z')):
+        archive_size = get_archive_size(full_path)
+        if lower.endswith('.zip'):
+            cmd = ["unzip", "-o", full_path, "-d", dest]
+        else:
+            cmd = ["7z", "x", full_path, f"-o{dest}", "-y"]
 
-    # Check local cache first
-    extract_dir = os.path.join(LOCAL_CACHE_DIR, name)
-    cached_game = find_cached_game(name)
-    if cached_game:
-        draw_progress(game_file, 1.0, "Cached \u2013 Launching")
-        touch_cache_entry(name, extract_dir)
-        pygame.time.wait(400)
-        pygame.quit()
-        subprocess.run(["retroarch", "-L", CORE, "--fullscreen", cached_game])
-        save_memcard(user, card)
-        return True
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        last_update = 0
+        while True:
+            line = proc.stdout.readline()
+            if not line and proc.poll() is not None:
+                break
+            now = time.time()
+            if now - last_update > 0.2:
+                cur_size = get_dir_size(dest)
+                pct = cur_size / archive_size if archive_size > 0 else 0
+                draw_progress(game_file, min(pct, 0.99), "Extracting")
+                last_update = now
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        proc.kill(); pygame.quit(); sys.exit()
+                    if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
+                        proc.kill()
+                        shutil.rmtree(dest, ignore_errors=True)
+                        return False
 
-    # Not cached - let user pick which to evict if at capacity
-    if not evict_cached_picker():
-        return False  # User cancelled
-
-    os.makedirs(extract_dir, exist_ok=True)
-    draw_progress(game_file, 0, "Reading archive...")
-    total_bytes = get_archive_size(path)
-
-    proc = None
-    try:
-        if lower.endswith(".zip"):
-            proc = subprocess.Popen(
-                ["unzip", "-o", path, "-d", extract_dir],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-        elif lower.endswith(".7z"):
-            proc = subprocess.Popen(
-                ["7z", "x", f"-o{extract_dir}", "-y", path],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-    except Exception as e:
-        print(f"Extract error: {e}")
-        shutil.rmtree(extract_dir, ignore_errors=True)
-        return False
-
-    if proc is None:
-        shutil.rmtree(extract_dir, ignore_errors=True)
-        return False
-
-    while proc.poll() is None:
-        if check_cancel():
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            shutil.rmtree(extract_dir, ignore_errors=True)
+        if proc.returncode != 0:
+            play_sfx('error')
+            draw_progress(game_file, 0, "Error")
+            time.sleep(2)
+            shutil.rmtree(dest, ignore_errors=True)
             return False
+    elif lower.endswith(('.iso', '.chd')):
+        dest = os.path.dirname(full_path)
 
-        progress = 0.0
-        if total_bytes > 0:
-            progress = min(get_dir_size(extract_dir) / total_bytes, 0.99)
-        draw_progress(game_file, progress, "Extracting")
-        clock.tick(5)
-
-    if proc.returncode != 0:
-        play_sfx('error')
-        draw_progress(game_file, 0, "Error")
-        pygame.time.wait(2000)
-        shutil.rmtree(extract_dir, ignore_errors=True)
-        return False
-
-    draw_progress(game_file, 1.0, "Complete")
-    pygame.time.wait(300)
-
+    # Find game file
     game_path = None
     for ext in GAME_EXTS:
-        matches = glob.glob(os.path.join(extract_dir, "**", f"*.{ext}"), recursive=True)
-        if matches:
-            game_path = matches[0]
+        found = glob.glob(os.path.join(dest, f"*.{ext}"))
+        if found:
+            game_path = found[0]
             break
 
     if not game_path:
         play_sfx('error')
         draw_progress(game_file, 0, "No ISO found")
-        pygame.time.wait(2000)
-        shutil.rmtree(extract_dir, ignore_errors=True)
+        time.sleep(2)
         return False
 
-    # Save to cache (keep extracted files)
-    touch_cache_entry(name, extract_dir)
+    manifest[game_key] = {
+        "path": dest,
+        "last_used": time.time(),
+        "source": game_file
+    }
+    save_cache_manifest(manifest)
 
-    draw_progress(game_file, 1.0, "Launching")
-    pygame.time.wait(400)
-    pygame.quit()
-    subprocess.run(["retroarch", "-L", CORE, "--fullscreen", game_path])
+    draw_progress(game_file, 1.0, "Launching...")
+    time.sleep(0.5)
+
+    load_memcard(user, card)
+    _launch_retroarch(game_path, core)
+    save_memcard(user, card)
     return True
 
 
-# ═══ Screen: User Picker ════════════════════════════════════════
+def _launch_retroarch(game_path, core):
+    """Launch RetroArch with the given game and core."""
+    if not core or not os.path.exists(core):
+        play_sfx('error')
+        draw_center_msg("Error", "RetroArch core not found!", "Check Settings > RetroArch Core")
+        time.sleep(2)
+        return
+    cmd = ["retroarch", "-L", core, game_path]
+    try:
+        subprocess.run(cmd)
+    except Exception as e:
+        play_sfx('error')
+        draw_center_msg("Launch Error", str(e)[:60], "Press any button")
+        _wait_any_button()
+
+
+
+# ═══ Screen: User Picker ═══════════════════════════════════════
 
 def screen_user_picker():
-    """Returns selected username or None to exit."""
+    """Pick or create a user profile. Returns username or None."""
     sel = 0
     scroll = 0
     last_joy = 0
 
     while True:
         users = get_users()
-        items = [(u, False) for u in users] + [("+ New User", True)]
-        sel = min(sel, len(items) - 1)
-        now = pygame.time.get_ticks()
+        items = [(u, False) for u in users] + [("+ New Profile", True)]
+        sel = max(0, min(sel, len(items) - 1))
+        now = time.time()
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                return None
+                pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    return None
+                    play_sfx('back'); return None
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN:
@@ -892,8 +1503,11 @@ def screen_user_picker():
                     if sel == len(items) - 1:
                         play_sfx('select')
                         name = on_screen_keyboard("Enter Username")
-                        if name:
-                            create_user(name)
+                        if name and name.strip():
+                            name = name.strip()
+                            if name not in users:
+                                create_user(name)
+                            return name
                     else:
                         play_sfx('select'); return users[sel]
             if ev.type == pygame.JOYBUTTONDOWN:
@@ -901,8 +1515,11 @@ def screen_user_picker():
                     if sel == len(items) - 1:
                         play_sfx('select')
                         name = on_screen_keyboard("Enter Username")
-                        if name:
-                            create_user(name)
+                        if name and name.strip():
+                            name = name.strip()
+                            if name not in users:
+                                create_user(name)
+                            return name
                     else:
                         play_sfx('select'); return users[sel]
                 if ev.button == 1:
@@ -914,9 +1531,9 @@ def screen_user_picker():
                 if hy == -1:
                     sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
 
-        if joy is not None and now - last_joy > DPAD_DELAY:
-            ya = joy.get_axis(1)
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
             moved = False
+            ya = joy.get_axis(1)
             if ya < -0.5:
                 sel = max(0, sel - 1); moved = True
             elif ya > 0.5:
@@ -930,37 +1547,33 @@ def screen_user_picker():
             scroll = sel - VISIBLE + 1
 
         screen.fill(BG)
-        draw_header("Select Profile",
-                     "A: Select  |  B: Exit",
+        draw_header("Select Profile", None,
                      f"{len(users)} profile{'s' if len(users) != 1 else ''}")
         draw_list(items, sel, scroll)
+
+        hint = F['sm'].render("[A] Select   [B] Exit", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
         pygame.display.flip()
         clock.tick(30)
 
 
-# ═══ Screen: Memory Card Manager ════════════════════════════════
+# ═══ Screen: Memory Card Picker ════════════════════════════════
 
-def screen_memcard_manager(user):
-    """Returns selected card name, or None to go back."""
+def screen_memcard_picker(user):
+    """Pick or create a memory card. Returns card name or None."""
     sel = 0
     scroll = 0
     last_joy = 0
 
     while True:
         cards = get_cards(user)
-        meta = get_user_meta(user)
-        last_card = meta.get("last_card", "")
-        items = []
-        for c in cards:
-            tag = "  (last used)" if c == last_card else ""
-            items.append((c + tag, False))
-        items.append(("+ New Card", True))
-        sel = min(sel, len(items) - 1)
-        now = pygame.time.get_ticks()
+        items = [(c, False) for c in cards] + [("+ New Card", True)]
+        sel = max(0, min(sel, len(items) - 1))
+        now = time.time()
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                return None
+                pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     play_sfx('back'); return None
@@ -981,7 +1594,6 @@ def screen_memcard_manager(user):
                         if confirm_dialog(f"Delete {cards[sel]}?"):
                             play_sfx('select')
                             delete_card(user, cards[sel])
-                            sel = min(sel, len(get_cards(user)))
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == 0:
                     if sel == len(items) - 1:
@@ -997,7 +1609,6 @@ def screen_memcard_manager(user):
                     if confirm_dialog(f"Delete {cards[sel]}?"):
                         play_sfx('select')
                         delete_card(user, cards[sel])
-                        sel = min(sel, len(get_cards(user)))
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
@@ -1005,9 +1616,9 @@ def screen_memcard_manager(user):
                 if hy == -1:
                     sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
 
-        if joy is not None and now - last_joy > DPAD_DELAY:
-            ya = joy.get_axis(1)
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
             moved = False
+            ya = joy.get_axis(1)
             if ya < -0.5:
                 sel = max(0, sel - 1); moved = True
             elif ya > 0.5:
@@ -1021,320 +1632,147 @@ def screen_memcard_manager(user):
             scroll = sel - VISIBLE + 1
 
         screen.fill(BG)
-        draw_header(f"{user}'s Cards",
-                     "A: Select  |  X: Delete  |  B: Back",
+        draw_header(f"{user}'s Cards", None,
                      f"{len(cards)} card{'s' if len(cards) != 1 else ''}")
         draw_list(items, sel, scroll)
+
+        hint = F['sm'].render("[A] Select   [B] Back   [X] Delete card", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
         pygame.display.flip()
         clock.tick(30)
 
 
-# ═══ Screen: Game Picker ════════════════════════════════
-
-def is_game_cached(game_file):
-    """Check if a game is in the local cache."""
-    name = strip_ext(game_file)
-    manifest = load_cache_manifest()
-    if name not in manifest:
-        return False
-    cache_path = manifest[name].get("path", "")
-    return os.path.isdir(cache_path)
-
-
-def get_cache_count():
-    """Return number of games currently cached."""
-    manifest = load_cache_manifest()
-    count = 0
-    for name, info in list(manifest.items()):
-        if os.path.isdir(info.get("path", "")):
-            count += 1
-    return count
-
-
-def clear_all_cache():
-    """Remove all cached games."""
-    manifest = load_cache_manifest()
-    for name, info in manifest.items():
-        cache_path = info.get("path", "")
-        if os.path.isdir(cache_path):
-            shutil.rmtree(cache_path, ignore_errors=True)
-    save_cache_manifest({})
-
-
-def evict_single_cached(game_name):
-    """Remove a single game from the local cache."""
-    manifest = load_cache_manifest()
-    if game_name in manifest:
-        cache_path = manifest[game_name].get("path", "")
-        if os.path.isdir(cache_path):
-            shutil.rmtree(cache_path, ignore_errors=True)
-        del manifest[game_name]
-        save_cache_manifest(manifest)
-
-
-def draw_hold_progress(progress, msg, cancel_hint="B: Cancel"):
-    """Draw a hold-to-confirm progress bar overlay at screen center."""
-    ow = int(W * 0.75)
-    oh = 90
-    ox = (W - ow) // 2
-    oy = (H - oh) // 2
-    pygame.draw.rect(screen, (30, 12, 50), (ox, oy, ow, oh), border_radius=8)
-    pygame.draw.rect(screen, ACCENT, (ox, oy, ow, oh), 2, border_radius=8)
-    ts = F["md_b"].render(msg, True, HDR)
-    screen.blit(ts, ts.get_rect(center=(W // 2, oy + 22)))
-    bw = ow - 40
-    bh = 16
-    bx = ox + 20
-    by = oy + 44
-    pygame.draw.rect(screen, BAR_BG, (bx, by, bw, bh), border_radius=4)
-    pygame.draw.rect(screen, BAR_BORDER, (bx, by, bw, bh), 2, border_radius=4)
-    fw = max(2, int((bw - 4) * min(progress, 1.0)))
-    if progress > 0:
-        pygame.draw.rect(screen, DANGER, (bx + 2, by + 2, fw, bh - 4), border_radius=3)
-    hs = F["sm"].render(cancel_hint, True, HINT)
-    screen.blit(hs, hs.get_rect(center=(W // 2, oy + oh - 14)))
-
+# ═══ Screen: Game Picker ═══════════════════════════════════════
 
 def screen_game_picker(user, card):
-    """Game selection screen. Returns True if reinit needed, False to go back."""
+    """Pick and launch a game. Returns True if game ran, False to go back."""
+    global joy
     sel = 0
     scroll = 0
-    last_joy = 0
-    clear_mode = False
-    hold_start_time = None
-    HOLD_DURATION = 2.0
-    single_clear_mode = False
-    single_clear_target = None
-    single_hold_start = None
-    SINGLE_HOLD_DURATION = 1.5
+    last_joy_time = 0
+    search_text = ""
 
     while True:
-        now = pygame.time.get_ticks()
-        manifest = load_cache_manifest()
-        cached_names = set()
-        for cname, cinfo in manifest.items():
-            if os.path.isdir(cinfo.get("path", "")):
-                cached_names.add(cname)
-        cache_count = len(cached_names)
+        # Filter games
+        if search_text:
+            filtered = [g for g in games if search_text.lower() in g.lower()]
+        else:
+            filtered = list(games)
+
+        if not filtered and not search_text:
+            screen.fill(BG)
+            draw_header("Games", None)
+            rom_dir = active_cfg.get('rom_dir', '(not set)')
+            msg1 = F['md'].render("No games found", True, TXT)
+            msg2 = F['sm'].render(f"ROM folder: {rom_dir}", True, TXT_DIM)
+            screen.blit(msg1, msg1.get_rect(center=(W // 2, H // 2 - 15)))
+            screen.blit(msg2, msg2.get_rect(center=(W // 2, H // 2 + 15)))
+            hint = F['sm'].render("[B] Back   [Start] Settings", True, HINT)
+            screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
+            pygame.display.flip()
+            for ev in pygame.event.get():
+                if ev.type == pygame.QUIT:
+                    pygame.quit(); sys.exit()
+                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return False
+                if ev.type == pygame.JOYBUTTONDOWN:
+                    if ev.button == 1:
+                        play_sfx('back'); return False
+                    if ev.button == 7:
+                        play_sfx('select'); settings_menu(user); reload_games()
+            clock.tick(30)
+            continue
+
+        sel = max(0, min(sel, len(filtered) - 1)) if filtered else 0
+        now = time.time()
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                return False
-
-            # ── Single game clear mode ──
-            if single_clear_mode:
-                if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
-                    single_clear_mode = False
-                    single_clear_target = None
-                    single_hold_start = None
-                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-                    single_clear_mode = False
-                    single_clear_target = None
-                    single_hold_start = None
-                continue
-
-            # ── Clear all cache mode ──
-            if clear_mode:
-                if ev.type == pygame.JOYBUTTONDOWN and ev.button == 1:
-                    clear_mode = False
-                    hold_start_time = None
-                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-                    clear_mode = False
-                    hold_start_time = None
-                continue
-
-            # ── Normal input ──
+                pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     play_sfx('back'); return False
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
-                if ev.key == pygame.K_DOWN:
-                    sel = min(len(games) - 1, sel + 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN and filtered:
+                    sel = min(len(filtered) - 1, sel + 1); play_sfx('navigate')
                 if ev.key == pygame.K_LEFT or ev.key == pygame.K_PAGEUP:
                     sel = max(0, sel - VISIBLE); play_sfx('navigate')
                 if ev.key == pygame.K_RIGHT or ev.key == pygame.K_PAGEDOWN:
-                    sel = min(len(games) - 1, sel + VISIBLE); play_sfx('navigate')
-                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    sel = min(len(filtered) - 1, sel + VISIBLE); play_sfx('navigate')
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE) and filtered:
                     play_sfx('launch')
-                    result = extract_and_launch(games[sel], user, card)
+                    result = extract_and_launch(filtered[sel], user, card)
                     if result:
                         return True
+                if ev.key == pygame.K_F1:
+                    play_sfx('select'); settings_menu(user); reload_games()
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == 0:
+                if ev.button == 0 and filtered:  # A = launch
                     play_sfx('launch')
-                    result = extract_and_launch(games[sel], user, card)
+                    result = extract_and_launch(filtered[sel], user, card)
                     if result:
                         return True
-                if ev.button == 1:
+                if ev.button == 1:  # B = back
                     play_sfx('back'); return False
-                if ev.button == 2:
-                    cur_name = strip_ext(games[sel])
-                    if cur_name in cached_names:
-                        single_clear_mode = True
-                        single_clear_target = cur_name
-                        single_hold_start = None
-                if ev.button == 6 and cache_count > 0:
-                    clear_mode = True
-                    hold_start_time = None
+                if ev.button == 7:  # Start = settings
+                    play_sfx('select'); settings_menu(user); reload_games()
+                if ev.button == 6:  # Select = search
+                    play_sfx('select')
+                    q = on_screen_keyboard("Search Games")
+                    search_text = q if q else ""
+                    sel = 0; scroll = 0
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
-                if hy == 1: sel = max(0, sel - 1); play_sfx('navigate')
-                if hy == -1: sel = min(len(games) - 1, sel + 1); play_sfx('navigate')
-                if hx == -1: sel = max(0, sel - VISIBLE); play_sfx('navigate')
-                if hx == 1: sel = min(len(games) - 1, sel + VISIBLE); play_sfx('navigate')
+                if hy == 1:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1 and filtered:
+                    sel = min(len(filtered) - 1, sel + 1); play_sfx('navigate')
+                if hx == -1:
+                    sel = max(0, sel - VISIBLE); play_sfx('navigate')
+                if hx == 1 and filtered:
+                    sel = min(len(filtered) - 1, sel + VISIBLE); play_sfx('navigate')
 
-        # ── Hold detection: single game clear (hold A) ──
-        if single_clear_mode and joy is not None:
-            a_held = joy.get_button(0)
-            if a_held:
-                if single_hold_start is None:
-                    single_hold_start = time.time()
-                elapsed = time.time() - single_hold_start
-                if elapsed >= SINGLE_HOLD_DURATION:
-                    evict_single_cached(single_clear_target)
-                    single_clear_mode = False
-                    single_clear_target = None
-                    single_hold_start = None
-            else:
-                single_hold_start = None
+        if joy is not None and filtered and now - last_joy_time > DPAD_DELAY / 1000:
+            moved = False
+            ya = joy.get_axis(1)
+            xa = joy.get_axis(0)
+            if ya < -0.5:
+                sel = max(0, sel - 1); moved = True
+            elif ya > 0.5:
+                sel = min(len(filtered) - 1, sel + 1); moved = True
+            if xa < -0.5:
+                sel = max(0, sel - VISIBLE); moved = True
+            elif xa > 0.5:
+                sel = min(len(filtered) - 1, sel + VISIBLE); moved = True
+            if moved:
+                play_sfx('navigate'); last_joy_time = now
 
-        # ── Hold detection: clear all cache (hold Start+Select) ──
-        if clear_mode and joy is not None:
-            select_held = joy.get_button(6)
-            start_held = joy.get_button(7)
-            if select_held and start_held:
-                if hold_start_time is None:
-                    hold_start_time = time.time()
-                elapsed = time.time() - hold_start_time
-                if elapsed >= HOLD_DURATION:
-                    clear_all_cache()
-                    clear_mode = False
-                    hold_start_time = None
-            else:
-                hold_start_time = None
+        if sel < scroll:
+            scroll = sel
+        if sel >= scroll + VISIBLE:
+            scroll = sel - VISIBLE + 1
 
-        # ── Analog stick navigation ──
-        if not clear_mode and not single_clear_mode:
-            if joy is not None and now - last_joy > DPAD_DELAY:
-                ya = joy.get_axis(1)
-                xa = joy.get_axis(0)
-                moved = False
-                if ya < -0.5: sel = max(0, sel - 1); moved = True
-                elif ya > 0.5: sel = min(len(games) - 1, sel + 1); moved = True
-                if xa < -0.5: sel = max(0, sel - VISIBLE); moved = True
-                elif xa > 0.5: sel = min(len(games) - 1, sel + VISIBLE); moved = True
-                if moved:
-                    play_sfx('navigate'); last_joy = now
-
-        if sel < scroll: scroll = sel
-        if sel >= scroll + VISIBLE: scroll = sel - VISIBLE + 1
-
-        # ── Build item list with cache indicators ──
-        items = []
-        for g in games:
-            name = strip_ext(g)
-            if name in cached_names:
-                items.append(("⚡ " + name, False))
-            else:
-                items.append((name, False))
-
-        # ── Draw ──
         screen.fill(BG)
-        cache_label = f"Cache: {cache_count}/{MAX_CACHED_GAMES}"
-        cur_name = strip_ext(games[sel]) if games else ""
-        cur_cached = cur_name in cached_names
-        hints = ["A: Launch", "B: Back"]
-        if cur_cached:
-            hints.append("X: Remove")
-        if cache_count > 0:
-            hints.append("Select: Clear All")
-        draw_header("PS2 Games",
-                     " | ".join(hints),
-                     f"{sel + 1}/{len(games)}  |  {cache_label}")
-        draw_list(items, sel, scroll)
+        title = f"Games - {user} / {card}"
+        search_hint = f" (filter: {search_text})" if search_text else ""
+        draw_header(title + search_hint, None,
+                     f"{len(filtered)} game{'s' if len(filtered) != 1 else ''}")
 
-        # ── Overlays ──
-        if single_clear_mode:
-            progress = 0.0
-            if single_hold_start is not None:
-                progress = min((time.time() - single_hold_start) / SINGLE_HOLD_DURATION, 1.0)
-            label = single_clear_target or ""
-            if len(label) > 25:
-                label = label[:22] + "..."
-            draw_hold_progress(progress, f"Hold A to remove: {label}", "B: Cancel")
+        if filtered:
+            items_display = [(truncate(strip_ext(g), F['md'], W - 30), False) for g in filtered]
+            draw_list(items_display, sel, scroll)
 
-        if clear_mode:
-            progress = 0.0
-            if hold_start_time is not None:
-                progress = min((time.time() - hold_start_time) / HOLD_DURATION, 1.0)
-            draw_hold_progress(progress, "Hold Start+Select to clear cache", "B: Cancel")
-
+        hint = F['sm'].render("[A] Launch   [B] Back   [Start] Settings   [Select] Search", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 14)))
         pygame.display.flip()
         clock.tick(30)
 
 
-# ═══ Main loop ═════════════════════════════════════════
-
-def draw_status_screen(title, detail=""):
-    """Draw a centered status message (for post-run tasks)."""
-    screen.fill(BG)
-    ts = F["lg"].render(title, True, HDR)
-    screen.blit(ts, ts.get_rect(center=(W // 2, H // 2 - 15)))
-    if detail:
-        ds = F["md"].render(detail, True, TXT)
-        screen.blit(ds, ds.get_rect(center=(W // 2, H // 2 + 15)))
-    pygame.display.flip()
-
-
-def main():
-    global screen, W, H, F, joy, clock
-
-    while True:
-        user = screen_user_picker()
-        if user is None:
-            break
-
-        while True:
-            card = screen_memcard_manager(user)
-            if card is None:
-                break
-
-            draw_center_msg("Loading Memory Card...", card, user)
-            load_memcard(user, card)
-            time.sleep(0.5)
-
-            needs_reinit = screen_game_picker(user, card)
-
-            if needs_reinit:
-                # RetroArch exited - reinitialize pygame fully
-                screen, W, H, F, joy = init_display()
-                clock = pygame.time.Clock()
-                init_sounds()
-                pygame.event.clear()
-
-                # Post-run tasks with status screen
-                draw_status_screen("Saving Memory Card...", card)
-                save_memcard(user, card)
-                time.sleep(0.4)
-
-                draw_status_screen("Returning to menu...")
-                time.sleep(0.6)
-
-                # Welcome-back splash
-                show_welcome_back(user)
-
-                # Flush any stale input from RetroArch session
-                pygame.event.clear()
-                # Continue inner loop -> back to memcard screen
-
-    pygame.quit()
-
-
-# ═══ Splash screen ══════════════════════════════════════════════
+# ═══ Splash Screen ═════════════════════════════════════════════
 
 def show_splash():
-    """Animated boot splash that flows into 'Press any button to start'."""
+    """Animated boot splash that flows into controller detection and start prompt."""
     global joy
     ANIM_DUR = 2.5
     start = time.time()
@@ -1346,12 +1784,12 @@ def show_splash():
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                pygame.quit(); sys.exit()
             if not animating and ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
                 play_sfx('select')
                 return
 
+        # Keep polling for controller
         if not animating and joy is None:
             pygame.joystick.quit()
             pygame.joystick.init()
@@ -1361,16 +1799,19 @@ def show_splash():
 
         screen.fill(BG)
 
+        # Title fade-in (0.0 -> 0.4)
         title_t = min(t / 0.4, 1.0)
         title_color = lerp_color(BG, HDR, title_t)
         ts = F['xl'].render("PS2 Picker", True, title_color)
         screen.blit(ts, ts.get_rect(center=(W // 2, H // 2 - 30)))
 
+        # Subtitle fade-in (0.2 -> 0.6)
         sub_t = max(0.0, min((t - 0.2) / 0.4, 1.0))
         sub_color = lerp_color(BG, HINT, sub_t)
         ss = F['md'].render("Goon Squad Canada", True, sub_color)
         screen.blit(ss, ss.get_rect(center=(W // 2, H // 2 + 10)))
 
+        # Accent line sweep (0.3 -> 0.7)
         line_t = max(0.0, min((t - 0.3) / 0.4, 1.0))
         line_w = int((W - 100) * line_t)
         if line_w > 0:
@@ -1378,20 +1819,25 @@ def show_splash():
             pygame.draw.line(screen, ACCENT, (lx, H // 2 + 35),
                              (lx + line_w, H // 2 + 35), 2)
 
+        # Phase 2: after animation, show prompt
         if not animating:
             pulse = 0.4 + 0.6 * abs(math.sin(elapsed * 2.5))
+
             if joy is None:
-                prompt = "Waiting for controller..."
+                prompt = "Connect a controller and press any button"
                 prompt_color = lerp_color(BG, HINT, pulse)
             else:
                 prompt = "Press any button to start"
                 prompt_color = lerp_color(BG, TXT, pulse)
+
             ps = F['md'].render(prompt, True, prompt_color)
             screen.blit(ps, ps.get_rect(center=(W // 2, H // 2 + 65)))
 
         pygame.display.flip()
         clock.tick(60)
 
+
+# ═══ Welcome Back Splash ═══════════════════════════════════════
 
 def show_welcome_back(user):
     """Quick welcome-back splash after RetroArch exits."""
@@ -1405,8 +1851,7 @@ def show_welcome_back(user):
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                pygame.quit(); sys.exit()
             if ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
                 return
 
@@ -1434,8 +1879,60 @@ def show_welcome_back(user):
         clock.tick(60)
 
 
-# ═══ Entry point ═══════════════════════════════════════════════
+# ═══ Main Loop ═════════════════════════════════════════════════
+
+def main():
+    """Main application loop."""
+    global screen, W, H, F, joy, active_cfg
+
+    # Load global config
+    active_cfg = load_global_config()
+    apply_volume()
+
+    # First-time setup check
+    if needs_first_time_setup():
+        first_time_setup()
+
+    reload_games()
+
+    while True:
+        # User picker
+        user = screen_user_picker()
+        if user is None:
+            if confirm_dialog("Exit PS2 Picker?"):
+                pygame.quit(); sys.exit()
+            continue
+
+        # Apply per-user settings
+        apply_user_settings(user)
+
+        # Memory card picker loop
+        while True:
+            card = screen_memcard_picker(user)
+            if card is None:
+                break  # Back to user picker
+
+            # Game picker loop
+            while True:
+                launched = screen_game_picker(user, card)
+                if launched:
+                    # Game was played, reinit display
+                    screen, W, H, F, joy = init_display()
+                    init_sounds()
+                    apply_volume()
+
+                    # Welcome back
+                    show_welcome_back(user)
+
+                    # Flush stale input
+                    pygame.event.clear()
+                    # Continue inner loop -> back to game picker
+                else:
+                    break  # Back to memcard picker
+
+
+# ═══ Entry Point ═══════════════════════════════════════════════
+
 init_sounds()
 show_splash()
 main()
-
