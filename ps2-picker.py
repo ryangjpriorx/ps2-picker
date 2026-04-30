@@ -212,11 +212,11 @@ def init_sounds():
         return
     SFX = {
         'navigate': _gen_tone(800, 50, 0.12),
-        'select':   _gen_tone(1200, 90, 0.2),
+        'select':   _gen_tone(700, 90, 0.18),        # Lowered from 1200
         'back':     _gen_sweep(600, 350, 90, 0.18),
         'error':    _gen_tone(280, 180, 0.25),
-        'launch':   _gen_sweep(500, 1400, 250, 0.22),
-        'type':     _gen_tone(1000, 25, 0.08),
+        'launch':   _gen_sweep(500, 900, 250, 0.20),  # Lowered peak from 1400
+        'type':     _gen_tone(600, 25, 0.08),          # Lowered from 1000
     }
     apply_volume()
 
@@ -881,9 +881,82 @@ def volume_slider(prompt="Volume", current_vol=0.5, muted=False):
 def _platform_root():
     """Return filesystem root for the current platform."""
     if IS_WINDOWS:
-        # Return the drive where Windows is installed
         return os.environ.get('SystemDrive', 'C:') + os.sep
     return "/"
+
+
+def _get_windows_drives():
+    """Return list of available Windows drive roots like ['C:\\', 'D:\\', ...]."""
+    if not IS_WINDOWS:
+        return []
+    drives = []
+    for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+        drive = f"{letter}:\\"
+        if os.path.exists(drive):
+            drives.append(drive)
+    return drives
+
+
+def _is_drive_root(path):
+    """Check if a path is a Windows drive root (e.g. C:\\)."""
+    if not IS_WINDOWS:
+        return path == '/'
+    return os.path.splitdrive(path)[1] in ('\\', '/', '')
+
+
+def _drive_selector():
+    """Windows drive picker. Returns selected drive root or None."""
+    drives = _get_windows_drives()
+    if not drives:
+        return None
+    sel = 0
+    last_joy = 0
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return None
+                if ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN:
+                    sel = min(len(drives) - 1, sel + 1); play_sfx('navigate')
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select'); return drives[sel]
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0:
+                    play_sfx('select'); return drives[sel]
+                if ev.button == 1:
+                    play_sfx('back'); return None
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1:
+                    sel = min(len(drives) - 1, sel + 1); play_sfx('navigate')
+
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            moved = False
+            ya = joy.get_axis(1)
+            if ya < -0.5:
+                sel = max(0, sel - 1); moved = True
+            elif ya > 0.5:
+                sel = min(len(drives) - 1, sel + 1); moved = True
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        screen.fill(BG)
+        draw_header("Select Drive", None, f"{len(drives)} drives")
+
+        items = [(d, False) for d in drives]
+        draw_list(items, sel, 0)
+
+        draw_hint_bar("[A] Select drive   [B] Cancel")
+        pygame.display.flip()
+        clock.tick(30)
 
 
 def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
@@ -936,8 +1009,13 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
                     parent = os.path.dirname(current)
                     if parent != current:
                         current = parent; sel = 0; scroll = 0
+                    elif IS_WINDOWS:
+                        # Show drive selector
+                        drive = _drive_selector()
+                        if drive:
+                            current = drive; sel = 0; scroll = 0
                     else:
-                        play_sfx('error')  # Already at root
+                        play_sfx('error')  # Already at Linux root
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN and entries:
@@ -985,8 +1063,13 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
                     parent = os.path.dirname(current)
                     if parent != current:
                         current = parent; sel = 0; scroll = 0
+                    elif IS_WINDOWS:
+                        # Show drive selector
+                        drive = _drive_selector()
+                        if drive:
+                            current = drive; sel = 0; scroll = 0
                     else:
-                        play_sfx('error')  # Already at root
+                        play_sfx('error')  # Already at Linux root
                 if ev.button == 2:  # X = select this folder/file
                     if mode == "folder":
                         play_sfx('select'); return current
