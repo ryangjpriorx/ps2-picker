@@ -2463,14 +2463,6 @@ def main():
     """Main application loop."""
     global screen, W, H, F, joy, active_cfg
 
-    # Dependency check (--check-deps forces it even when all installed)
-    force_dep_check = '--check-deps' in sys.argv
-    deps_result, distro, missing = check_dependencies(force=force_dep_check)
-    if deps_result is not None:
-        show_dependency_screen(deps_result, distro, missing, force=force_dep_check)
-        if missing and not force_dep_check:
-            pygame.quit(); sys.exit(1)
-
     # Load global config
     active_cfg = load_global_config()
     apply_volume()
@@ -2520,5 +2512,15 @@ def main():
 # ═══ Entry Point ═══════════════════════════════════════════════
 
 init_sounds()
+
+# Dependency check runs before splash — --check-deps forces it even when all OK
+_force_dep_check = '--check-deps' in sys.argv
+_deps_result, _dep_distro, _dep_missing = check_dependencies(force=_force_dep_check)
+if _deps_result is not None:
+    pygame.event.clear()  # Flush any stale input
+    show_dependency_screen(_deps_result, _dep_distro, _dep_missing, force=_force_dep_check)
+    if _dep_missing and not _force_dep_check:
+        pygame.quit(); sys.exit(1)
+
 show_splash()
 main()
