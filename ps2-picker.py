@@ -637,6 +637,10 @@ def draw_list(items, sel_idx, scroll, colors=None):
             color = HDR if special else TXT
             label = F['md'].render(display, True, color)
         screen.blit(label, (scaled(14), y + scaled(3)))
+        # Cached indicator
+        if special:
+            tag = F['sm'].render("\u26A1", True, SUCCESS)
+            screen.blit(tag, (W - scaled(22), y + scaled(3)))
 
 
 def draw_center_msg(top_text, mid_text="", bot_text=""):
@@ -2941,7 +2945,9 @@ def screen_game_picker(user, card):
                      f"{len(filtered)} game{'s' if len(filtered) != 1 else ''}")
 
         if filtered:
-            items_display = [(truncate(strip_ext(g), F['md'], W - 30), False) for g in filtered]
+            cached_keys = set(load_cache_manifest().keys())
+            items_display = [(truncate(strip_ext(g), F['md'], W - scaled(60)),
+                              strip_ext(g) in cached_keys) for g in filtered]
             draw_list(items_display, sel, scroll)
 
         draw_hint_bar("[A] Launch   [B] Back   [Start] Settings   [Select] Search")
