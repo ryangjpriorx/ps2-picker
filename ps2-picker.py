@@ -613,18 +613,116 @@ def save_cache_manifest(manifest):
         json.dump(manifest, f, indent=2)
 
 
-def evict_oldest_cached():
-    """Remove the oldest cached game if cache is at capacity."""
+def evict_cached_picker():
+    """Interactive picker to choose which cached game to remove when cache is full."""
     manifest = load_cache_manifest()
     if len(manifest) < MAX_CACHED_GAMES:
-        return
-    oldest = min(manifest, key=lambda k: manifest[k].get("last_used", 0))
-    cache_path = manifest[oldest].get("path", "")
-    if os.path.isdir(cache_path):
-        shutil.rmtree(cache_path, ignore_errors=True)
-    del manifest[oldest]
-    save_cache_manifest(manifest)
-    print(f"Cache evicted: {oldest}")
+        return True
+
+    # Sort by last_used (oldest first) and build display list
+    entries = sorted(manifest.keys(),
+                     key=lambda k: manifest[k].get("last_used", 0))
+    sel = 0
+    scroll = 0
+    VISIBLE = 6
+    DPAD_DELAY = 0.18
+    last_joy = 0
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back')
+                    return False  # Cancel launch
+                if ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN:
+                    sel = min(len(entries) - 1, sel + 1); play_sfx('navigate')
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select')
+                    name = entries[sel]
+                    if confirm_dialog(f"Delete {name}?"):
+                        cache_path = manifest[name].get("path", "")
+                        if os.path.isdir(cache_path):
+                            shutil.rmtree(cache_path, ignore_errors=True)
+                        del manifest[name]
+                        save_cache_manifest(manifest)
+                        return True
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0:
+                    play_sfx('select')
+                    name = entries[sel]
+                    if confirm_dialog(f"Delete {name}?"):
+                        cache_path = manifest[name].get("path", "")
+                        if os.path.isdir(cache_path):
+                            shutil.rmtree(cache_path, ignore_errors=True)
+                        del manifest[name]
+                        save_cache_manifest(manifest)
+                        return True
+                if ev.button == 1:
+                    play_sfx('back')
+                    return False
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1:
+                    sel = min(len(entries) - 1, sel + 1); play_sfx('navigate')
+
+        if joy is not None and now - last_joy > DPAD_DELAY:
+            moved = False
+            ya = joy.get_axis(1)
+            if ya < -0.5:
+                sel = max(0, sel - 1); moved = True
+            elif ya > 0.5:
+                sel = min(len(entries) - 1, sel + 1); moved = True
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        if sel < scroll:
+            scroll = sel
+        if sel >= scroll + VISIBLE:
+            scroll = sel - VISIBLE + 1
+
+        screen.fill(BG)
+        draw_header("Cache Full", f"Select a game to remove ({len(entries)}/{MAX_CACHED_GAMES})")
+
+        y = 70
+        for i in range(scroll, min(scroll + VISIBLE, len(entries))):
+            name = entries[i]
+            is_sel = (i == sel)
+            rect = pygame.Rect(20, y, W - 40, 44)
+            if is_sel:
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=6)
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=6)
+
+            label = F['md'].render(name[:40], True, TXT_SEL if is_sel else TXT)
+            screen.blit(label, (rect.x + 12, rect.y + 6))
+
+            # Show how long ago it was last played
+            last_used = manifest[name].get("last_used", 0)
+            if last_used > 0:
+                age = time.time() - last_used
+                if age < 3600:
+                    age_str = f"{int(age/60)}m ago"
+                elif age < 86400:
+                    age_str = f"{int(age/3600)}h ago"
+                else:
+                    age_str = f"{int(age/86400)}d ago"
+                age_s = F['sm'].render(age_str, True, TXT_DIM)
+                screen.blit(age_s, (rect.right - age_s.get_width() - 12, rect.y + 10))
+
+            y += 50
+
+        hint = F['sm'].render("[A] Delete   [B] Cancel", True, HINT)
+        screen.blit(hint, hint.get_rect(center=(W // 2, H - 25)))
+
+        pygame.display.flip()
+        clock.tick(30)
 
 
 def touch_cache_entry(name, extract_dir):
@@ -686,8 +784,9 @@ def extract_and_launch(game_file, user, card):
         save_memcard(user, card)
         return True
 
-    # Not cached - evict oldest if at capacity
-    evict_oldest_cached()
+    # Not cached - let user pick which to evict if at capacity
+    if not evict_cached_picker():
+        return False  # User cancelled
 
     os.makedirs(extract_dir, exist_ok=True)
     draw_progress(game_file, 0, "Reading archive...")
