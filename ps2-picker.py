@@ -131,22 +131,102 @@ def find_memcard_dir():
 
 MEMCARD_ACTIVE = find_memcard_dir()
 
-# ═══ Theme (Royal Purple & Gold) ════════════════════════════════
-BG       = (18, 8, 32)
-SEL_BG   = (88, 28, 135)
-TXT      = (220, 210, 190)
-TXT_SEL  = (255, 215, 0)
-TXT_DIM  = (140, 130, 120)
-HDR      = (255, 200, 50)
-HINT     = (210, 170, 100)
-BAR_BG   = (40, 20, 65)
-BAR_FG   = (180, 140, 50)
-BAR_BORDER = (120, 80, 180)
-ACCENT   = (147, 51, 234)
-DANGER   = (200, 60, 60)
-KEY_BG   = (40, 18, 65)
-KEY_SEL  = (120, 50, 180)
-SUCCESS  = (50, 180, 80)
+# ═══ Theme System ═══════════════════════════════════════════════
+import colorsys
+
+# Default theme (Royal Purple & Gold)
+DEFAULT_THEME = {
+    "bg":        [18, 8, 32],
+    "accent":    [147, 51, 234],
+    "highlight":  [255, 200, 50],
+    "text":      [220, 210, 190],
+}
+
+# Built-in presets
+THEME_PRESETS = {
+    "Royal Purple & Gold": {"bg": [18, 8, 32], "accent": [147, 51, 234], "highlight": [255, 200, 50], "text": [220, 210, 190]},
+    "Ocean Blue":          {"bg": [8, 16, 36], "accent": [40, 120, 220], "highlight": [80, 220, 240], "text": [200, 215, 230]},
+    "Forest Green":        {"bg": [10, 26, 16], "accent": [40, 160, 80], "highlight": [180, 220, 60], "text": [200, 220, 200]},
+    "Crimson Red":         {"bg": [32, 8, 12], "accent": [200, 40, 60], "highlight": [255, 180, 50], "text": [220, 200, 195]},
+    "Midnight Teal":       {"bg": [8, 20, 28], "accent": [0, 180, 170], "highlight": [255, 220, 100], "text": [210, 225, 220]},
+    "Retro Amber":         {"bg": [28, 20, 8], "accent": [200, 140, 30], "highlight": [255, 200, 80], "text": [230, 215, 180]},
+    "Slate Gray":          {"bg": [24, 26, 30], "accent": [100, 120, 160], "highlight": [200, 210, 230], "text": [200, 200, 210]},
+}
+
+
+def _clamp(v): return max(0, min(255, int(v)))
+
+def _blend(c1, c2, t):
+    """Blend two RGB tuples by factor t (0.0=c1, 1.0=c2)."""
+    return tuple(_clamp(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
+
+def _lighten(c, amt=40):
+    return tuple(_clamp(v + amt) for v in c)
+
+def _darken(c, amt=40):
+    return tuple(_clamp(v - amt) for v in c)
+
+def _dim(c, factor=0.6):
+    return tuple(_clamp(v * factor) for v in c)
+
+
+def apply_theme(theme_dict=None):
+    """Derive all UI colors from 4 base colors and set globals."""
+    global BG, SEL_BG, TXT, TXT_SEL, TXT_DIM, HDR, HINT
+    global BAR_BG, BAR_FG, BAR_BORDER, ACCENT, DANGER, KEY_BG, KEY_SEL, SUCCESS
+
+    t = dict(DEFAULT_THEME)
+    if theme_dict:
+        t.update(theme_dict)
+
+    bg   = tuple(t["bg"])
+    acc  = tuple(t["accent"])
+    hi   = tuple(t["highlight"])
+    txt  = tuple(t["text"])
+
+    BG         = bg
+    ACCENT     = acc
+    HDR        = hi
+    TXT_SEL    = hi
+    TXT        = txt
+    TXT_DIM    = _dim(txt, 0.62)
+    HINT       = _blend(hi, txt, 0.45)
+    SEL_BG     = _blend(bg, acc, 0.45)
+    BAR_BG     = _lighten(bg, 22)
+    BAR_FG     = _dim(hi, 0.75)
+    BAR_BORDER = _blend(acc, bg, 0.4)
+    KEY_BG     = _lighten(bg, 20)
+    KEY_SEL    = _lighten(acc, 30)
+    DANGER     = (200, 60, 60)   # Safety colors stay fixed
+    SUCCESS    = (50, 180, 80)
+
+
+def load_theme_from_config():
+    """Load theme from global config and apply it."""
+    cfg = load_global_config() if os.path.exists(GLOBAL_CONFIG_PATH) else {}
+    theme = cfg.get("theme", None)
+    apply_theme(theme)
+
+
+def save_theme_to_config(theme_dict):
+    """Save theme to global config."""
+    cfg = load_global_config()
+    cfg["theme"] = theme_dict
+    save_global_config(cfg)
+
+
+def get_current_theme():
+    """Get the currently active theme dict (4 base colors)."""
+    cfg = load_global_config() if os.path.exists(GLOBAL_CONFIG_PATH) else {}
+    t = dict(DEFAULT_THEME)
+    saved = cfg.get("theme")
+    if saved:
+        t.update(saved)
+    return t
+
+
+# Apply theme on import (uses defaults if no config exists yet)
+load_theme_from_config()
 
 os.makedirs(APP_DIR, exist_ok=True)
 os.makedirs(USERS_DIR, exist_ok=True)
@@ -1474,6 +1554,7 @@ def settings_menu(username=None):
         ("RetroArch Core", "core_path"),
         ("Cache Folder", "local_cache_dir"),
         ("Max Cached Games", "max_cached_games"),
+        ("Theme Colors", "theme"),
         ("Back", "back"),
     ]
     sel = 0
@@ -1557,6 +1638,362 @@ def settings_menu(username=None):
         clock.tick(30)
 
 
+# ═══ Theme / Color Picker Submenu ═══════════════════════════════
+
+def _rgb_to_hsv(r, g, b):
+    h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+    return int(h * 360), int(s * 100), int(v * 100)
+
+def _hsv_to_rgb(h, s, v):
+    r, g, b = colorsys.hsv_to_rgb(h / 360, s / 100, v / 100)
+    return _clamp(r * 255), _clamp(g * 255), _clamp(v * 255)
+
+
+def color_slider(label, color_rgb):
+    """HSV color slider for a single color. Returns new RGB tuple or None if cancelled."""
+    h, s, v = _rgb_to_hsv(*color_rgb)
+    sel = 0  # 0=Hue, 1=Sat, 2=Val
+    channels = [h, s, v]
+    maxes = [360, 100, 100]
+    names = ["Hue", "Saturation", "Brightness"]
+    last_joy = 0
+    step = 1
+    hold_time = 0
+    held_dir = 0
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return None
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select')
+                    return _hsv_to_rgb(channels[0], channels[1], channels[2])
+                if ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN:
+                    sel = min(2, sel + 1); play_sfx('navigate')
+                if ev.key == pygame.K_LEFT:
+                    channels[sel] = max(0, channels[sel] - 1)
+                if ev.key == pygame.K_RIGHT:
+                    channels[sel] = min(maxes[sel], channels[sel] + 1)
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0:
+                    play_sfx('select')
+                    return _hsv_to_rgb(channels[0], channels[1], channels[2])
+                if ev.button == 1:
+                    play_sfx('back'); return None
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1: sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1: sel = min(2, sel + 1); play_sfx('navigate')
+                if hx == -1: channels[sel] = max(0, channels[sel] - 1)
+                if hx == 1: channels[sel] = min(maxes[sel], channels[sel] + 1)
+
+        # Analog stick for fine/fast control
+        if joy is not None and now - last_joy > 0.04:
+            xa = joy.get_axis(0)
+            ya = joy.get_axis(1)
+            if abs(xa) > 0.3:
+                # Accelerate with hold
+                if (xa > 0) == (held_dir > 0) and held_dir != 0:
+                    hold_time += 0.04
+                else:
+                    hold_time = 0
+                held_dir = 1 if xa > 0 else -1
+                step = 1 + int(hold_time * 4)
+                step = min(step, 10)
+                delta = step if xa > 0 else -step
+                channels[sel] = max(0, min(maxes[sel], channels[sel] + delta))
+                last_joy = now
+            else:
+                held_dir = 0; hold_time = 0
+            if abs(ya) > 0.5:
+                if ya < -0.5: sel = max(0, sel - 1)
+                elif ya > 0.5: sel = min(2, sel + 1)
+                last_joy = now
+
+        # Draw
+        preview_rgb = _hsv_to_rgb(channels[0], channels[1], channels[2])
+        screen.fill(BG)
+        draw_header(f"Edit: {label}", "[A] Confirm   [B] Cancel")
+
+        # Color preview swatch
+        swatch_w, swatch_h = scaled(120), scaled(80)
+        swatch_x = (W - swatch_w) // 2
+        swatch_y = scaled(56)
+        pygame.draw.rect(screen, preview_rgb, (swatch_x, swatch_y, swatch_w, swatch_h), border_radius=scaled(8))
+        pygame.draw.rect(screen, ACCENT, (swatch_x, swatch_y, swatch_w, swatch_h), 2, border_radius=scaled(8))
+        hex_str = f"#{preview_rgb[0]:02X}{preview_rgb[1]:02X}{preview_rgb[2]:02X}"
+        hex_s = F['sm'].render(hex_str, True, TXT)
+        screen.blit(hex_s, hex_s.get_rect(center=(W // 2, swatch_y + swatch_h + scaled(12))))
+
+        # HSV sliders
+        slider_y = swatch_y + swatch_h + scaled(30)
+        for i in range(3):
+            is_sel = (i == sel)
+            y = slider_y + i * scaled(52)
+
+            # Label
+            lbl_color = HDR if is_sel else TXT
+            lbl = F['md_b' if is_sel else 'md'].render(f"{names[i]}: {channels[i]}", True, lbl_color)
+            screen.blit(lbl, (scaled(30), y))
+
+            # Slider track
+            track_x = scaled(30)
+            track_w = W - scaled(60)
+            track_y = y + scaled(22)
+            track_h = scaled(16)
+
+            if is_sel:
+                pygame.draw.rect(screen, SEL_BG, (track_x - scaled(4), y - scaled(4),
+                                 track_w + scaled(8), scaled(48)), border_radius=scaled(6))
+
+            # Draw gradient track
+            for px in range(track_w):
+                t_val = px / track_w
+                if i == 0:  # Hue rainbow
+                    cr, cg, cb = colorsys.hsv_to_rgb(t_val, channels[1] / 100, channels[2] / 100)
+                elif i == 1:  # Saturation
+                    cr, cg, cb = colorsys.hsv_to_rgb(channels[0] / 360, t_val, channels[2] / 100)
+                else:  # Value/brightness
+                    cr, cg, cb = colorsys.hsv_to_rgb(channels[0] / 360, channels[1] / 100, t_val)
+                pygame.draw.line(screen, (_clamp(cr * 255), _clamp(cg * 255), _clamp(cb * 255)),
+                                 (track_x + px, track_y), (track_x + px, track_y + track_h))
+
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG,
+                             (track_x, track_y, track_w, track_h), 2, border_radius=scaled(3))
+
+            # Handle/thumb
+            thumb_x = track_x + int((channels[i] / maxes[i]) * track_w)
+            pygame.draw.circle(screen, HDR if is_sel else TXT, (thumb_x, track_y + track_h // 2), scaled(8))
+            pygame.draw.circle(screen, BG, (thumb_x, track_y + track_h // 2), scaled(5))
+
+        draw_hint_bar("D-pad Left/Right to adjust, Up/Down to switch")
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def theme_submenu():
+    """Theme color picker submenu. Presets + custom per-color editing."""
+    items = [
+        ("Preset Theme", "preset"),
+        ("Background", "bg"),
+        ("Accent", "accent"),
+        ("Highlight", "highlight"),
+        ("Text", "text"),
+        ("Reset to Default", "reset"),
+        ("Back", "back"),
+    ]
+    sel = 0
+    last_joy = 0
+    theme = get_current_theme()
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return
+                if ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN:
+                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select')
+                    key = items[sel][1]
+                    if key == "back":
+                        return
+                    elif key == "reset":
+                        theme = dict(DEFAULT_THEME)
+                        apply_theme(theme)
+                        save_theme_to_config(theme)
+                    elif key == "preset":
+                        result = preset_picker()
+                        if result:
+                            theme = result
+                            apply_theme(theme)
+                            save_theme_to_config(theme)
+                    else:
+                        result = color_slider(items[sel][0], tuple(theme[key]))
+                        if result:
+                            theme[key] = list(result)
+                            apply_theme(theme)
+                            save_theme_to_config(theme)
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0:
+                    play_sfx('select')
+                    key = items[sel][1]
+                    if key == "back":
+                        return
+                    elif key == "reset":
+                        theme = dict(DEFAULT_THEME)
+                        apply_theme(theme)
+                        save_theme_to_config(theme)
+                    elif key == "preset":
+                        result = preset_picker()
+                        if result:
+                            theme = result
+                            apply_theme(theme)
+                            save_theme_to_config(theme)
+                    else:
+                        result = color_slider(items[sel][0], tuple(theme[key]))
+                        if result:
+                            theme[key] = list(result)
+                            apply_theme(theme)
+                            save_theme_to_config(theme)
+                if ev.button == 1:
+                    play_sfx('back'); return
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1: sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1: sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
+
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            ya = joy.get_axis(1)
+            if abs(ya) > 0.5:
+                if ya < -0.5: sel = max(0, sel - 1)
+                else: sel = min(len(items) - 1, sel + 1)
+                play_sfx('navigate'); last_joy = now
+
+        screen.fill(BG)
+        draw_header("Theme Colors", "[A] Edit   [B] Back")
+
+        y = scaled(56)
+        for i, (label, key) in enumerate(items):
+            is_sel = (i == sel)
+            rect = pygame.Rect(scaled(20), y, W - scaled(40), scaled(38))
+            if is_sel:
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
+
+            lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
+            screen.blit(lbl, (rect.x + scaled(12), rect.y + scaled(4)))
+
+            # Color swatch preview for editable colors
+            if key in ("bg", "accent", "highlight", "text"):
+                swatch_size = scaled(22)
+                sx = rect.right - swatch_size - scaled(12)
+                sy = rect.y + (rect.height - swatch_size) // 2
+                pygame.draw.rect(screen, tuple(theme[key]),
+                                 (sx, sy, swatch_size, swatch_size), border_radius=scaled(4))
+                pygame.draw.rect(screen, TXT,
+                                 (sx, sy, swatch_size, swatch_size), 1, border_radius=scaled(4))
+
+            y += scaled(44)
+
+        # Live preview strip at bottom
+        preview_y = H - scaled(60)
+        pygame.draw.rect(screen, BG, (scaled(20), preview_y, W - scaled(40), scaled(32)), border_radius=scaled(6))
+        pygame.draw.rect(screen, ACCENT, (scaled(20), preview_y, W - scaled(40), scaled(32)), 1, border_radius=scaled(6))
+        prev_labels = [
+            ("Sample", HDR), ("Text", TXT), ("Accent", ACCENT), ("Hint", HINT),
+        ]
+        px = scaled(35)
+        for plbl, pcol in prev_labels:
+            ps = F['sm'].render(plbl, True, pcol)
+            screen.blit(ps, (px, preview_y + scaled(8)))
+            px += ps.get_width() + scaled(20)
+
+        draw_hint_bar("Changes apply instantly and are saved globally")
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def preset_picker():
+    """Pick from built-in theme presets. Returns theme dict or None."""
+    names = list(THEME_PRESETS.keys())
+    sel = 0
+    last_joy = 0
+
+    while True:
+        now = time.time()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return None
+                if ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                    apply_theme(THEME_PRESETS[names[sel]])  # Live preview
+                if ev.key == pygame.K_DOWN:
+                    sel = min(len(names) - 1, sel + 1); play_sfx('navigate')
+                    apply_theme(THEME_PRESETS[names[sel]])
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select')
+                    return dict(THEME_PRESETS[names[sel]])
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0:
+                    play_sfx('select')
+                    return dict(THEME_PRESETS[names[sel]])
+                if ev.button == 1:
+                    play_sfx('back')
+                    # Restore previous theme before exiting
+                    load_theme_from_config()
+                    return None
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                    apply_theme(THEME_PRESETS[names[sel]])
+                if hy == -1:
+                    sel = min(len(names) - 1, sel + 1); play_sfx('navigate')
+                    apply_theme(THEME_PRESETS[names[sel]])
+
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            ya = joy.get_axis(1)
+            if abs(ya) > 0.5:
+                if ya < -0.5: sel = max(0, sel - 1)
+                else: sel = min(len(names) - 1, sel + 1)
+                apply_theme(THEME_PRESETS[names[sel]])
+                play_sfx('navigate'); last_joy = now
+
+        screen.fill(BG)
+        draw_header("Select Preset", "[A] Apply   [B] Cancel")
+
+        y = scaled(56)
+        for i, name in enumerate(names):
+            is_sel = (i == sel)
+            rect = pygame.Rect(scaled(20), y, W - scaled(40), scaled(38))
+            if is_sel:
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
+
+            lbl = F['md_b' if is_sel else 'md'].render(name, True, TXT_SEL if is_sel else TXT)
+            screen.blit(lbl, (rect.x + scaled(12), rect.y + scaled(4)))
+
+            # Mini swatches for preset colors
+            preset = THEME_PRESETS[name]
+            sx = rect.right - scaled(100)
+            sy = rect.y + (rect.height - scaled(18)) // 2
+            for j, ck in enumerate(("bg", "accent", "highlight", "text")):
+                pygame.draw.rect(screen, tuple(preset[ck]),
+                                 (sx + j * scaled(22), sy, scaled(18), scaled(18)),
+                                 border_radius=scaled(3))
+            y += scaled(44)
+
+        # Live preview strip
+        preview_y = H - scaled(60)
+        pygame.draw.rect(screen, BG, (scaled(20), preview_y, W - scaled(40), scaled(32)), border_radius=scaled(6))
+        pygame.draw.rect(screen, ACCENT, (scaled(20), preview_y, W - scaled(40), scaled(32)), 1, border_radius=scaled(6))
+        prev_labels = [("Sample", HDR), ("Text", TXT), ("Accent", ACCENT), ("Hint", HINT)]
+        px = scaled(35)
+        for plbl, pcol in prev_labels:
+            ps = F['sm'].render(plbl, True, pcol)
+            screen.blit(ps, (px, preview_y + scaled(8)))
+            px += ps.get_width() + scaled(20)
+
+        draw_hint_bar("Navigate to preview, [A] to apply")
+        pygame.display.flip()
+        clock.tick(30)
+
+
 def _handle_setting(key, username=None):
     """Handle editing a single setting."""
     if key == "back":
@@ -1591,6 +2028,9 @@ def _handle_setting(key, username=None):
                               min_val=1, max_val=20)
         if result is not None:
             active_cfg["max_cached_games"] = result
+    elif key == "theme":
+        theme_submenu()
+        return  # Theme saves itself directly to global config
 
     # Persist changes
     if username:
