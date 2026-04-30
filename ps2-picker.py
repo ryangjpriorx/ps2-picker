@@ -95,13 +95,15 @@ def needs_first_time_setup():
 
 
 def reload_games():
-    """Refresh the game list from active config rom_dir."""
+    """Refresh the game list from active config rom_dir. Cached games sort to top."""
     global games
     rom_dir = active_cfg.get("rom_dir", "")
     if rom_dir and os.path.isdir(rom_dir):
+        all_games = [f for f in os.listdir(rom_dir) if f.lower().endswith(EXTS)]
+        cached_keys = set(load_cache_manifest().keys())
         games = sorted(
-            [f for f in os.listdir(rom_dir) if f.lower().endswith(EXTS)],
-            key=str.lower
+            all_games,
+            key=lambda f: (0 if strip_ext(f) in cached_keys else 1, f.lower())
         )
     else:
         games = []
