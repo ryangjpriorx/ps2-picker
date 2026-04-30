@@ -1176,130 +1176,279 @@ def file_browser(prompt="Select a folder", start_path=None, mode="folder"):
 
 # ═══ First-Time Setup Wizard ═══════════════════════════════════
 
+def _load_checker_detected():
+    """Load auto-detected paths from the pre-launcher's checker.json."""
+    checker_path = os.path.join(APP_DIR, 'checker.json')
+    if os.path.exists(checker_path):
+        try:
+            with open(checker_path) as f:
+                data = json.load(f)
+            return data.get('custom_paths', {})
+        except Exception:
+            pass
+    return {}
+
+
+def _find_ps2_core(retroarch_path=None):
+    """Try to auto-detect a PS2 core from RetroArch's cores directory."""
+    core_ext = '.dll' if IS_WINDOWS else '.so'
+    ps2_core_names = [
+        f'pcsx2_libretro{core_ext}',
+        f'pcsx2_hw_libretro{core_ext}',
+    ]
+    search_dirs = []
+
+    # From detected RetroArch path
+    if retroarch_path and os.path.isfile(retroarch_path):
+        ra_dir = os.path.dirname(retroarch_path)
+        search_dirs.append(os.path.join(ra_dir, 'cores'))
+        search_dirs.append(os.path.join(os.path.dirname(ra_dir), 'cores'))
+
+    # Common default locations
+    if IS_WINDOWS:
+        pf = os.environ.get('PROGRAMFILES', '')
+        pf86 = os.environ.get('PROGRAMFILES(X86)', '')
+        search_dirs.extend([
+            os.path.join(pf, 'RetroArch', 'cores'),
+            os.path.join(pf86, 'RetroArch', 'cores'),
+            os.path.join(pf, 'RetroArch-Win64', 'cores'),
+            os.path.join(pf86, 'RetroArch-Win64', 'cores'),
+        ])
+    else:
+        search_dirs.extend([
+            os.path.expanduser('~/.config/retroarch/cores'),
+            '/usr/lib/libretro',
+            '/usr/lib64/libretro',
+            '/usr/share/libretro/cores',
+        ])
+
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        for name in ps2_core_names:
+            full = os.path.join(d, name)
+            if os.path.isfile(full):
+                return full
+    return None
+
+
 def first_time_setup():
     """Guided first-time setup wizard. Populates global config."""
     global active_cfg
     cfg = load_global_config()
 
-    # -- Step 1: Welcome --
+    # Check for auto-detected paths from pre-launcher
+    detected = _load_checker_detected()
+    ra_path = detected.get('retroarch')
+    auto_core = _find_ps2_core(ra_path)
+    can_auto = bool(auto_core)
+    use_auto = False
+
+    # -- Step 1: Welcome + Auto-config offer --
+    sel = 0  # 0 = auto (if available), 1 = manual
+    if not can_auto:
+        sel = 0  # Only manual available
     waiting = True
     while waiting:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
-            if ev.type in (pygame.JOYBUTTONDOWN, pygame.KEYDOWN):
-                play_sfx('select'); waiting = False
+            if ev.type == pygame.KEYDOWN:
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select'); waiting = False
+                    use_auto = can_auto and sel == 0
+                if can_auto:
+                    if ev.key == pygame.K_UP:
+                        sel = max(0, sel - 1); play_sfx('navigate')
+                    if ev.key == pygame.K_DOWN:
+                        sel = min(1, sel + 1); play_sfx('navigate')
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == 0:
+                    play_sfx('select'); waiting = False
+                    use_auto = can_auto and sel == 0
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if can_auto:
+                    if hy == 1: sel = max(0, sel - 1); play_sfx('navigate')
+                    if hy == -1: sel = min(1, sel + 1); play_sfx('navigate')
+
         screen.fill(BG)
         ts = F['xl'].render("Welcome to PS2 Picker", True, HDR)
-        screen.blit(ts, ts.get_rect(center=(W // 2, H // 4)))
+        screen.blit(ts, ts.get_rect(center=(W // 2, H // 5)))
         ss = F['md'].render("Let's get everything set up.", True, TXT)
-        screen.blit(ss, ss.get_rect(center=(W // 2, H // 4 + scaled(35))))
-        ss2 = F['md'].render("This will only take a moment.", True, TXT_DIM)
-        screen.blit(ss2, ss2.get_rect(center=(W // 2, H // 4 + scaled(60))))
+        screen.blit(ss, ss.get_rect(center=(W // 2, H // 5 + scaled(35))))
 
-        steps_info = [
-            "1. Choose where your PS2 games are stored",
-            "2. Locate your RetroArch PS2 core",
-            "3. Set up game cache preferences",
-            "4. Adjust audio volume",
-            "5. Create your first profile",
-        ]
-        for i, step_text in enumerate(steps_info):
-            color = HINT if i > 0 else TXT_SEL
-            st = F['md'].render(step_text, True, color)
-            screen.blit(st, (scaled(40), H // 2 + i * scaled(28)))
+        if can_auto:
+            # Show auto-config option
+            auto_label = "Automatic Setup (recommended)"
+            auto_desc = f"PS2 core detected at: {os.path.basename(auto_core)}"
+            manual_label = "Manual Setup (5 steps)"
+            manual_desc = "Configure each setting yourself"
 
-        hint = F['sm'].render("Press any button to begin", True, ACCENT)
+            y_base = H // 2 - scaled(20)
+
+            # Auto option
+            if sel == 0:
+                pygame.draw.rect(screen, SEL_BG, (scaled(30), y_base - scaled(4),
+                                 W - scaled(60), scaled(44)), border_radius=scaled(6))
+            opt0 = F['md_b'].render(auto_label, True, TXT_SEL if sel == 0 else TXT)
+            screen.blit(opt0, (scaled(50), y_base))
+            d0 = F['sm'].render(auto_desc, True, SUCCESS if sel == 0 else TXT_DIM)
+            screen.blit(d0, (scaled(50), y_base + scaled(20)))
+
+            y_base += scaled(56)
+
+            # Manual option
+            if sel == 1:
+                pygame.draw.rect(screen, SEL_BG, (scaled(30), y_base - scaled(4),
+                                 W - scaled(60), scaled(44)), border_radius=scaled(6))
+            opt1 = F['md_b'].render(manual_label, True, TXT_SEL if sel == 1 else TXT)
+            screen.blit(opt1, (scaled(50), y_base))
+            d1 = F['sm'].render(manual_desc, True, HINT if sel == 1 else TXT_DIM)
+            screen.blit(d1, (scaled(50), y_base + scaled(20)))
+
+        else:
+            # No auto available — show manual steps
+            steps_info = [
+                "1. Choose where your PS2 games are stored",
+                "2. Locate your RetroArch PS2 core",
+                "3. Set up game cache preferences",
+                "4. Adjust audio volume",
+                "5. Create your first profile",
+            ]
+            for i, step_text in enumerate(steps_info):
+                color = HINT if i > 0 else TXT_SEL
+                st = F['md'].render(step_text, True, color)
+                screen.blit(st, (scaled(40), H // 2 + i * scaled(28)))
+
+        hint = F['sm'].render("Press [A] to select", True, ACCENT)
         pulse = 0.4 + 0.6 * abs(math.sin(time.time() * 2.5))
         hint.set_alpha(int(255 * pulse))
         screen.blit(hint, hint.get_rect(center=(W // 2, H - scaled(25))))
         pygame.display.flip()
         clock.tick(30)
 
-    # -- Step 2: ROM directory (required) --
-    while True:
-        draw_center_msg("Step 1 of 5", "Where are your PS2 games stored?",
-                        "Browse to your ROM folder, or press [Y] to type the path")
-        time.sleep(0.8)
-        rom_path = file_browser("Select your ROM/Games folder", start_path=os.path.expanduser("~"))
-        if rom_path and os.path.isdir(rom_path):
-            cfg["rom_dir"] = rom_path
-            break
-        # file_browser returned None (Start pressed) - offer keyboard
-        draw_center_msg("Step 1 of 5", "No folder selected.",
-                        "Press any button to try again")
-        _wait_any_button()
+    if use_auto:
+        # ─── Automatic Setup: only ROM dir + username ───
+        cfg["core_path"] = auto_core
+        cfg["local_cache_dir"] = os.path.expanduser("~/ps2-cache")
+        cfg["max_cached_games"] = 3
+        cfg["volume"] = 0.5
+        cfg["muted"] = False
 
-    # -- Step 3: Core path (required) --
-    while True:
-        if IS_WINDOWS:
-            core_hint = "Locate your RetroArch PS2 core (.dll file)"
-            tip_hint = "Tip: usually in Program Files/RetroArch/cores"
-        else:
-            core_hint = "Locate your RetroArch PS2 core (.so file)"
-            tip_hint = "Tip: press [L1] to show hidden folders like .config"
-        draw_center_msg("Step 2 of 5", core_hint, tip_hint)
-        time.sleep(0.8)
-        if IS_WINDOWS:
-            default_cores = os.path.join(os.environ.get('PROGRAMFILES', ''), 'RetroArch', 'cores')
-        else:
-            default_cores = os.path.expanduser("~/.config/retroarch/cores")
-        core_start = default_cores if os.path.isdir(default_cores) else os.path.expanduser("~")
-        core_ext = ".dll" if IS_WINDOWS else ".so"
-        core_path = file_browser(f"Select PS2 core file ({core_ext})", start_path=core_start, mode="file")
-        if core_path and os.path.isfile(core_path):
-            cfg["core_path"] = core_path
-            break
-        draw_center_msg("Step 2 of 5", "No core file selected.",
-                        "Press any button to try again")
-        _wait_any_button()
-
-    # -- Step 4: Cache directory + max cached --
-    draw_center_msg("Step 3 of 5", "Game cache settings",
-                    "Games are extracted to a local cache for faster loading")
-    time.sleep(1.0)
-
-    default_cache = os.path.expanduser("~/ps2-cache")
-    use_default = confirm_dialog(f"Use default cache: {default_cache}?")
-    if use_default:
-        cfg["local_cache_dir"] = default_cache
-    else:
+        # -- ROM directory (still required) --
         while True:
-            cache_path = file_browser("Select cache folder", start_path=os.path.expanduser("~"))
-            if cache_path and os.path.isdir(cache_path):
-                cfg["local_cache_dir"] = cache_path
+            draw_center_msg("Step 1 of 2", "Where are your PS2 games stored?",
+                            "Browse to your ROM folder, or press [Y] to type the path")
+            time.sleep(0.8)
+            rom_path = file_browser("Select your ROM/Games folder", start_path=os.path.expanduser("~"))
+            if rom_path and os.path.isdir(rom_path):
+                cfg["rom_dir"] = rom_path
                 break
-            draw_center_msg("Step 3 of 5", "No folder selected.",
+            draw_center_msg("Step 1 of 2", "No folder selected.",
                             "Press any button to try again")
             _wait_any_button()
 
-    result = number_input("Max games to keep cached?",
-                          cfg.get("max_cached_games", 3), min_val=1, max_val=20)
-    if result is not None:
-        cfg["max_cached_games"] = result
+        # -- Create first user (required) --
+        while True:
+            draw_center_msg("Step 2 of 2", "Create your profile", "")
+            time.sleep(0.6)
+            name = on_screen_keyboard("Enter your username")
+            if name and name.strip():
+                name = name.strip()
+                if name not in get_users():
+                    create_user(name)
+                break
+            draw_center_msg("Step 2 of 2", "A username is required.",
+                            "Press any button to try again")
+            _wait_any_button()
 
-    # -- Step 5: Volume --
-    draw_center_msg("Step 4 of 5", "Set your preferred audio level", "")
-    time.sleep(0.6)
-    vol_result = volume_slider("Navigation Sound Volume",
-                               cfg.get("volume", 0.5),
-                               cfg.get("muted", False))
-    if vol_result is not None:
-        cfg["volume"], cfg["muted"] = vol_result
+    else:
+        # ─── Manual Setup: full 5-step wizard ───
 
-    # -- Step 6: Create first user (required) --
-    while True:
-        draw_center_msg("Step 5 of 5", "Create your profile", "")
+        # -- Step 1: ROM directory (required) --
+        while True:
+            draw_center_msg("Step 1 of 5", "Where are your PS2 games stored?",
+                            "Browse to your ROM folder, or press [Y] to type the path")
+            time.sleep(0.8)
+            rom_path = file_browser("Select your ROM/Games folder", start_path=os.path.expanduser("~"))
+            if rom_path and os.path.isdir(rom_path):
+                cfg["rom_dir"] = rom_path
+                break
+            draw_center_msg("Step 1 of 5", "No folder selected.",
+                            "Press any button to try again")
+            _wait_any_button()
+
+        # -- Step 2: Core path (required) --
+        while True:
+            if IS_WINDOWS:
+                core_hint = "Locate your RetroArch PS2 core (.dll file)"
+                tip_hint = "Tip: usually in Program Files/RetroArch/cores"
+            else:
+                core_hint = "Locate your RetroArch PS2 core (.so file)"
+                tip_hint = "Tip: press [L1] to show hidden folders like .config"
+            draw_center_msg("Step 2 of 5", core_hint, tip_hint)
+            time.sleep(0.8)
+            if IS_WINDOWS:
+                default_cores = os.path.join(os.environ.get('PROGRAMFILES', ''), 'RetroArch', 'cores')
+            else:
+                default_cores = os.path.expanduser("~/.config/retroarch/cores")
+            core_start = default_cores if os.path.isdir(default_cores) else os.path.expanduser("~")
+            core_ext = ".dll" if IS_WINDOWS else ".so"
+            core_path = file_browser(f"Select PS2 core file ({core_ext})", start_path=core_start, mode="file")
+            if core_path and os.path.isfile(core_path):
+                cfg["core_path"] = core_path
+                break
+            draw_center_msg("Step 2 of 5", "No core file selected.",
+                            "Press any button to try again")
+            _wait_any_button()
+
+        # -- Step 3: Cache directory + max cached --
+        draw_center_msg("Step 3 of 5", "Game cache settings",
+                        "Games are extracted to a local cache for faster loading")
+        time.sleep(1.0)
+
+        default_cache = os.path.expanduser("~/ps2-cache")
+        use_default = confirm_dialog(f"Use default cache: {default_cache}?")
+        if use_default:
+            cfg["local_cache_dir"] = default_cache
+        else:
+            while True:
+                cache_path = file_browser("Select cache folder", start_path=os.path.expanduser("~"))
+                if cache_path and os.path.isdir(cache_path):
+                    cfg["local_cache_dir"] = cache_path
+                    break
+                draw_center_msg("Step 3 of 5", "No folder selected.",
+                                "Press any button to try again")
+                _wait_any_button()
+
+        result = number_input("Max games to keep cached?",
+                              cfg.get("max_cached_games", 3), min_val=1, max_val=20)
+        if result is not None:
+            cfg["max_cached_games"] = result
+
+        # -- Step 4: Volume --
+        draw_center_msg("Step 4 of 5", "Set your preferred audio level", "")
         time.sleep(0.6)
-        name = on_screen_keyboard("Enter your username")
-        if name and name.strip():
-            name = name.strip()
-            if name not in get_users():
-                create_user(name)
-            break
-        draw_center_msg("Step 5 of 5", "A username is required.",
-                        "Press any button to try again")
-        _wait_any_button()
+        vol_result = volume_slider("Navigation Sound Volume",
+                                   cfg.get("volume", 0.5),
+                                   cfg.get("muted", False))
+        if vol_result is not None:
+            cfg["volume"], cfg["muted"] = vol_result
+
+        # -- Step 5: Create first user (required) --
+        while True:
+            draw_center_msg("Step 5 of 5", "Create your profile", "")
+            time.sleep(0.6)
+            name = on_screen_keyboard("Enter your username")
+            if name and name.strip():
+                name = name.strip()
+                if name not in get_users():
+                    create_user(name)
+                break
+            draw_center_msg("Step 5 of 5", "A username is required.",
+                            "Press any button to try again")
+            _wait_any_button()
 
     # -- Save --
     cfg["setup_complete"] = True
@@ -1309,7 +1458,8 @@ def first_time_setup():
     reload_games()
 
     # Confirmation
-    draw_center_msg("Setup Complete!", f"Found {len(games)} games",
+    mode_text = "(auto-configured)" if use_auto else "(manual setup)"
+    draw_center_msg("Setup Complete!", f"Found {len(games)} games {mode_text}",
                     "Press any button to continue")
     _wait_any_button()
 
