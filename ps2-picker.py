@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.29'
+VERSION = '0.1.30'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -1315,20 +1315,17 @@ def confirm_dialog(message):
                 last_joy = now
 
         screen.fill(BG)
-        # Multi-line message rendering (split on \n)
+        # Render message lines (supports \n for multi-line)
         lines = message.split('\n')
-        line_y = H // 3
-        for li, line_text in enumerate(lines):
-            if li == 0:
-                font = F['lg']
-                color = HDR
-            else:
-                font = F['md']
-                color = TXT_DIM
-            display_line = truncate(line_text, font, W - scaled(40))
-            ls = font.render(display_line, True, color)
-            screen.blit(ls, ls.get_rect(center=(W // 2, line_y)))
-            line_y += ls.get_height() + scaled(6)
+        line_h = F['lg'].get_linesize() + scaled(4)
+        total_text_h = len(lines) * line_h
+        text_top = H // 3 - total_text_h // 2
+        for li, line in enumerate(lines):
+            line_font = F['lg'] if li == 0 else F['md']
+            line_color = HDR if li == 0 else TXT_DIM
+            display_line = truncate(line.strip(), line_font, W - scaled(40))
+            ls = line_font.render(display_line, True, line_color)
+            screen.blit(ls, ls.get_rect(center=(W // 2, text_top + li * line_h)))
         for i, label in enumerate(["Yes", "No"]):
             bx = W // 2 + (i * scaled(120) - scaled(60))
             rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
@@ -2265,7 +2262,7 @@ def settings_menu(username=None):
                 ch_color = (220, 160, 50) if ch_val == 1 else SUCCESS
                 ch_surf = F['sm'].render(ch_label, True, ch_color if is_sel else TXT_DIM)
                 screen.blit(ch_surf, (rect.right - ch_surf.get_width() - scaled(12),
-                                      rect.y + scaled(38) // 2 - ch_surf.get_height() // 2))
+                                      rect.y + ROW_H_S // 2 - ch_surf.get_height() // 2))
             elif key in ("theme", "controller_map", "cache_manager"):
                 # Show a chevron to indicate submenu
                 if key == "cache_manager":
@@ -3762,15 +3759,16 @@ MENU_ICONS = [
 ]
 
 
+
+
 def _is_l2_held():
-    """Check if L2 trigger is currently held (axis 4 > 0.5 or button 6)."""
+    """Check if L2 trigger is currently held (axis or button)."""
     if joy is None:
         return False
     try:
-        # Most controllers: L2 is axis 4 (range -1 to 1, resting at -1 or 0)
-        if joy.get_numaxes() > 4 and joy.get_axis(4) > 0.5:
-            return True
-        # Fallback: some controllers map L2 to button 6
+        for axis_idx in (4, 2):
+            if joy.get_numaxes() > axis_idx and joy.get_axis(axis_idx) > 0.5:
+                return True
         if joy.get_numbuttons() > 6 and joy.get_button(6):
             return True
     except Exception:
@@ -3779,21 +3777,33 @@ def _is_l2_held():
 
 
 def _launch_ps2_bios():
-    """Launch RetroArch with the PS2 core but no ROM (BIOS boot)."""
+    """Launch RetroArch with the PS2 core but no ROM (BIOS/menu boot).
+    Uses choice_dialog for actionable error recovery."""
+    global screen, W, H, F, joy
     core = active_cfg.get("core_path", "")
     if not core or not os.path.exists(core):
         play_sfx('error')
-        draw_center_msg("Error", "PS2 core not found!", "Set it in Settings first.")
-        _wait_any_button()
+        result = choice_dialog(
+            "PS2 core not found\nSet the core path in Settings to boot BIOS.",
+            ["Open Settings", "Cancel"]
+        )
+        if result == "Open Settings":
+            settings_menu()
         return
     ra = _find_retroarch()
-    cmd = [ra, "-L", core]
-    try:
-        subprocess.run(cmd)
-    except Exception as e:
+    if not ra:
         play_sfx('error')
-        draw_center_msg("Launch Error", str(e)[:60], "Press any button")
-        _wait_any_button()
+        result = choice_dialog(
+            "RetroArch not found\nInstall RetroArch or check your PATH.",
+            ["Open Settings", "Cancel"]
+        )
+        if result == "Open Settings":
+            settings_menu()
+        return
+    try:
+        subprocess.run([ra, "-L", core])
+    except Exception:
+        pass
 
 
 # ═══ Screen: Main Menu ═════════════════════════════════════════
@@ -5328,7 +5338,6 @@ def main():
                 )
                 if result == "Mount Card":
                     screen_memcard_picker(user)
-                    # Re-check if they mounted one
                     meta = get_user_meta(user)
                     card = meta.get("last_card", "") or None
                     if not card:
@@ -5376,6 +5385,7 @@ def main():
         elif choice == "Exit":
             if confirm_dialog("Exit PS2 Picker?"):
                 pygame.quit(); sys.exit()
+
 
 
 # ═══ Entry Point ═══════════════════════════════════════════════
