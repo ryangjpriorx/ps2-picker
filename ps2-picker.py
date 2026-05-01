@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.17'
+VERSION = '0.1.18'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -2102,6 +2102,7 @@ def settings_menu(username=None):
     }
     sel = 0
     last_joy = 0
+    _start_time = time.time()
 
     while True:
         now = time.time()
@@ -2145,20 +2146,50 @@ def settings_menu(username=None):
             if moved:
                 play_sfx('navigate'); last_joy = now
 
-        screen.fill(BG)
-        title = f"Settings - {username}" if username else "Global Settings"
-        draw_header(title, "[A] Edit   [B] Back", f"v{VERSION}")
+        t = time.time() - _start_time
 
-        y = scaled(60)
+        screen.fill(BG)
+
+        # Themed header
+        title = f"Settings - {username}" if username else "Global Settings"
+        title_surf = F['lg'].render(title, True, HDR)
+        screen.blit(title_surf, (scaled(12), scaled(10)))
+        ver_surf = F['sm'].render(f"v{VERSION}", True, TXT_DIM)
+        screen.blit(ver_surf, (W - ver_surf.get_width() - scaled(12), scaled(16)))
+        pygame.draw.line(screen, _blend(BG, ACCENT, 0.5),
+                         (scaled(8), scaled(42) - 1), (W - scaled(8), scaled(42) - 1), 1)
+        pygame.draw.line(screen, _blend(BG, ACCENT, 0.25),
+                         (scaled(8), scaled(42) + 1), (W - scaled(8), scaled(42) + 1), 1)
+
+        y = scaled(50)
+        ROW_H_S = scaled(42)
         for i, (label, key) in enumerate(items):
             is_sel = (i == sel)
-            rect = pygame.Rect(scaled(20), y, W - scaled(40), scaled(38))
-            if is_sel:
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
-            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
+            rect = pygame.Rect(scaled(14), y, W - scaled(28), ROW_H_S)
 
-            lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
-            screen.blit(lbl, (rect.x + scaled(12), rect.y + scaled(4)))
+            if is_sel:
+                # Animated selection glow
+                glow_alpha = int(80 + 40 * math.sin(t * 3))
+                glow_color = _blend(BG, ACCENT, glow_alpha / 255)
+                pygame.draw.rect(screen, glow_color,
+                                 rect.inflate(scaled(4), scaled(2)),
+                                 border_radius=scaled(6))
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(5))
+                # Animated accent side bar
+                bar_h = int(ROW_H_S * (0.5 + 0.15 * math.sin(t * 4)))
+                accent_rect = pygame.Rect(rect.x, y + (ROW_H_S - bar_h) // 2,
+                                          scaled(3), bar_h)
+                pygame.draw.rect(screen, ACCENT, accent_rect, border_radius=scaled(1))
+            else:
+                if i % 2 == 0:
+                    pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.3),
+                                     rect, border_radius=scaled(4))
+                pygame.draw.rect(screen, _blend(BG, ACCENT, 0.12),
+                                 rect, 1, border_radius=scaled(4))
+
+            text_x = rect.x + scaled(16)
+            lbl = F['md_b' if is_sel else 'md'].render(label, True, HDR if is_sel else TXT)
+            screen.blit(lbl, (text_x, rect.y + scaled(4)))
 
             # Show current value for editable settings (skip submenu-only items)
             if key not in ("back", "theme", "controller_map"):
@@ -2173,18 +2204,27 @@ def settings_menu(username=None):
                 else:
                     val_str = truncate(str(val), F['sm'], W // 2 - scaled(20)) if val else "(not set)"
                 vs = F['sm'].render(val_str, True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(vs, (rect.right - vs.get_width() - scaled(12), rect.y + scaled(10)))
+                screen.blit(vs, (rect.right - vs.get_width() - scaled(12),
+                                 rect.y + ROW_H_S // 2 - vs.get_height() // 2))
             elif key in ("theme", "controller_map", "cache_manager"):
                 # Show a chevron to indicate submenu
                 if key == "cache_manager":
                     manifest = load_cache_manifest()
                     count = len(manifest)
-                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}", True, ACCENT if is_sel else TXT_DIM)
-                    screen.blit(info, (rect.right - info.get_width() - scaled(28), rect.y + scaled(10)))
+                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}",
+                                          True, ACCENT if is_sel else TXT_DIM)
+                    screen.blit(info, (rect.right - info.get_width() - scaled(28),
+                                      rect.y + ROW_H_S // 2 - info.get_height() // 2))
                 chev = F['md'].render("\u203A", True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(chev, (rect.right - chev.get_width() - scaled(12), rect.y + scaled(4)))
+                screen.blit(chev, (rect.right - chev.get_width() - scaled(12),
+                                   rect.y + ROW_H_S // 2 - chev.get_height() // 2))
 
-            y += scaled(44)
+            # Subtle separator
+            sep_y = y + ROW_H_S + scaled(1)
+            pygame.draw.line(screen, _blend(BG, ACCENT, 0.08),
+                             (scaled(22), sep_y), (W - scaled(22), sep_y), 1)
+
+            y += ROW_H_S + scaled(4)
 
         current_key = items[sel][1]
         hint = setting_hints.get(current_key, "")
@@ -2194,7 +2234,7 @@ def settings_menu(username=None):
         pygame.display.flip()
         if _need_fade:
             fade_from_black(); _need_fade = False
-        clock.tick(30)
+        clock.tick(60)
 
 
 # ═══ Controller Mapping Submenu ══════════════════════════════
@@ -2896,11 +2936,7 @@ def save_cache_manifest(manifest):
 
 
 def cache_manager_screen():
-    """Themed cache manager — view and delete cached games.
-
-    Visual style matches the rest of the app: themed header, animated
-    selection, usage bar, fade transitions, 60fps.
-    """
+    """Dedicated cache manager — view and delete cached games."""
     manifest = load_cache_manifest()
 
     # Purge stale entries
@@ -2912,58 +2948,35 @@ def cache_manager_screen():
         save_cache_manifest(manifest)
 
     sel = 0
-    scroll_y = 0.0
-    target_scroll = 0.0
+    scroll = 0
+    VIS = max(1, (H - scaled(110)) // scaled(50))
     last_joy = 0
-    _need_fade = True
-    start_time = time.time()
-
-    HEADER_H = scaled(42)
-    HINT_H = scaled(32)
-    USAGE_H = scaled(22)        # space for usage bar below header
-    ROW_H = scaled(56)
-    ROW_GAP = scaled(4)
-    LEFT_PAD = scaled(14)
-    SCROLL_SPEED = 10.0
-
-    def _entry_size(entry):
-        """Calculate total size of a cache entry on disk."""
-        entry_path = entry.get("path", "")
-        total = 0
-        if os.path.isdir(entry_path):
-            for dp, _, fns in os.walk(entry_path):
-                for fn in fns:
-                    try:
-                        total += os.path.getsize(os.path.join(dp, fn))
-                    except OSError:
-                        pass
-        return total
-
-    def _age_str(last_used):
-        """Human-readable age string from a timestamp."""
-        if last_used <= 0:
-            return "never"
-        age = time.time() - last_used
-        if age < 3600:
-            return f"{max(1, int(age / 60))}m ago"
-        elif age < 86400:
-            return f"{int(age / 3600)}h ago"
-        else:
-            return f"{int(age / 86400)}d ago"
 
     while True:
         now = time.time()
-        t = now - start_time
-        dt = clock.get_time() / 1000.0
-
         # Rebuild sorted entries each frame (list may shrink after deletion)
         entries = sorted(manifest.keys(),
                          key=lambda k: manifest[k].get("last_used", 0), reverse=True)
         total = len(entries)
-        max_cached = active_cfg.get("max_cached_games", 3)
 
         # Calculate total cache size
-        total_bytes = sum(_entry_size(v) for v in manifest.values())
+        total_bytes = 0
+        for v in manifest.values():
+            p = v.get("path", "")
+            if os.path.isdir(p):
+                for dirpath, _, filenames in os.walk(p):
+                    for fn in filenames:
+                        try:
+                            total_bytes += os.path.getsize(os.path.join(dirpath, fn))
+                        except OSError:
+                            pass
+
+        if total_bytes >= 1 << 30:
+            size_str = f"{total_bytes / (1 << 30):.1f} GB"
+        elif total_bytes >= 1 << 20:
+            size_str = f"{total_bytes / (1 << 20):.0f} MB"
+        else:
+            size_str = f"{total_bytes / (1 << 10):.0f} KB"
 
         _dirty = False
         for ev in pygame.event.get():
@@ -2971,7 +2984,7 @@ def cache_manager_screen():
                 pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); fade_to_black(); return
+                    play_sfx('back'); return
                 if ev.key == pygame.K_UP and total:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN and total:
@@ -2998,7 +3011,7 @@ def cache_manager_screen():
                         manifest.clear()
                         save_cache_manifest(manifest)
                         reload_games()
-                        sel = 0
+                        sel = 0; scroll = 0
                         play_sfx('select')
                     _dirty = True; break
             if ev.type == pygame.JOYBUTTONDOWN:
@@ -3016,7 +3029,7 @@ def cache_manager_screen():
                         sel = min(sel, max(0, len(manifest) - 1))
                     _dirty = True; break
                 if ev.button == BTN["back"]:
-                    play_sfx('back'); fade_to_black(); return
+                    play_sfx('back'); return
                 if ev.button == BTN["alt"] and total:  # Y = delete all
                     if confirm_dialog("Delete ALL cached games?"):
                         for name in list(manifest.keys()):
@@ -3026,7 +3039,7 @@ def cache_manager_screen():
                         manifest.clear()
                         save_cache_manifest(manifest)
                         reload_games()
-                        sel = 0
+                        sel = 0; scroll = 0
                         play_sfx('select')
                     _dirty = True; break
             if ev.type == pygame.JOYHATMOTION and total:
@@ -3037,167 +3050,95 @@ def cache_manager_screen():
                     sel = min(total - 1, sel + 1); play_sfx('navigate')
 
         if _dirty:
-            continue
+            continue  # restart loop to rebuild entries from modified manifest
 
         if joy is not None and total and now - last_joy > DPAD_DELAY / 1000:
             moved = False
-            try:
-                ya = joy.get_axis(1)
-                if ya < -0.5:
-                    sel = max(0, sel - 1); moved = True
-                elif ya > 0.5:
-                    sel = min(total - 1, sel + 1); moved = True
-            except Exception:
-                pass
+            ya = joy.get_axis(1)
+            if ya < -0.5:
+                sel = max(0, sel - 1); moved = True
+            elif ya > 0.5:
+                sel = min(total - 1, sel + 1); moved = True
             if moved:
                 play_sfx('navigate'); last_joy = now
 
-        # Smooth scroll tracking
-        view_h = H - HEADER_H - USAGE_H - HINT_H
-        content_h = total * (ROW_H + ROW_GAP) if total else 0
-        sel_y = sel * (ROW_H + ROW_GAP)
-        if sel_y < target_scroll:
-            target_scroll = sel_y
-        if sel_y + ROW_H > target_scroll + view_h:
-            target_scroll = sel_y + ROW_H - view_h
-        target_scroll = max(0, min(target_scroll, max(0, content_h - view_h)))
-        scroll_y += (target_scroll - scroll_y) * min(1.0, dt * SCROLL_SPEED)
+        if sel < scroll:
+            scroll = sel
+        if sel >= scroll + VIS:
+            scroll = sel - VIS + 1
 
         # ─── Draw ───
         screen.fill(BG)
-
-        # Themed header
-        title_surf = F['lg'].render("Cache Manager", True, HDR)
-        screen.blit(title_surf, (scaled(12), scaled(10)))
-        sub_str = f"{total}/{max_cached} slots  \u2022  {_format_size(total_bytes)}"
-        sub = F['sm'].render(sub_str, True, TXT_DIM)
-        screen.blit(sub, (W - sub.get_width() - scaled(12), scaled(16)))
-        pygame.draw.line(screen, _blend(BG, ACCENT, 0.5),
-                         (scaled(8), HEADER_H - 1), (W - scaled(8), HEADER_H - 1), 1)
-        pygame.draw.line(screen, _blend(BG, ACCENT, 0.25),
-                         (scaled(8), HEADER_H + 1), (W - scaled(8), HEADER_H + 1), 1)
-
-        # Cache usage bar (slots used)
-        bar_left = scaled(12)
-        bar_right = W - scaled(12)
-        bar_w = bar_right - bar_left
-        bar_h = scaled(5)
-        bar_y = HEADER_H + scaled(3)
-        pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.4),
-                         (bar_left, bar_y, bar_w, bar_h), border_radius=scaled(2))
-        slot_pct = min(1.0, total / max(1, max_cached))
-        used_w = max(scaled(2), int(bar_w * slot_pct)) if total > 0 else 0
-        bar_color = ACCENT if slot_pct < 0.9 else (220, 80, 60)
-        if used_w > 0:
-            pygame.draw.rect(screen, bar_color,
-                             (bar_left, bar_y, used_w, bar_h), border_radius=scaled(2))
-        usage_label = f"{total} of {max_cached} slots used  \u2022  {_format_size(total_bytes)} on disk"
-        usage_surf = F['sm'].render(usage_label, True, TXT_DIM)
-        screen.blit(usage_surf, (bar_left, bar_y + bar_h + scaled(1)))
-
-        content_top = HEADER_H + USAGE_H
+        max_cached = active_cfg.get("max_cached_games", 3)
+        draw_header("Cache Manager", f"{total}/{max_cached} slots \u2022 {size_str}")
 
         if total == 0:
-            # Empty state
-            msg = F['md'].render("No cached games", True, TXT_DIM)
-            screen.blit(msg, msg.get_rect(center=(W // 2, H // 2 - scaled(10))))
-            hint = F['sm'].render("Games are cached when extracted from archives", True, TXT_DIM)
-            screen.blit(hint, hint.get_rect(center=(W // 2, H // 2 + scaled(14))))
+            empty = F['md'].render("No cached games", True, TXT_DIM)
+            screen.blit(empty, empty.get_rect(center=(W // 2, H // 2)))
         else:
-            content_rect = pygame.Rect(0, content_top, W, view_h)
-            screen.set_clip(content_rect)
-
-            draw_y = content_top - int(scroll_y)
-            for i, name in enumerate(entries):
+            y = scaled(55)
+            for i in range(scroll, min(scroll + VIS, total)):
+                name = entries[i]
                 is_sel = (i == sel)
-                ry = draw_y
+                rect = pygame.Rect(scaled(12), y, W - scaled(24), scaled(44))
+                if is_sel:
+                    pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+                pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
 
-                if ry + ROW_H > content_top and ry < H - HINT_H:
-                    row_rect = pygame.Rect(LEFT_PAD, ry, W - LEFT_PAD * 2, ROW_H)
+                # Game name
+                label = F['md_b' if is_sel else 'md'].render(
+                    truncate(name, F['md'], W - scaled(140)),
+                    True, TXT_SEL if is_sel else TXT)
+                screen.blit(label, (rect.x + scaled(10), rect.y + scaled(4)))
 
-                    if is_sel:
-                        # Animated selection glow
-                        glow_alpha = int(80 + 40 * math.sin(t * 3))
-                        glow_color = _blend(BG, ACCENT, glow_alpha / 255)
-                        pygame.draw.rect(screen, glow_color,
-                                         row_rect.inflate(scaled(4), scaled(2)),
-                                         border_radius=scaled(6))
-                        pygame.draw.rect(screen, SEL_BG, row_rect, border_radius=scaled(5))
-                        # Accent side bar
-                        bar_anim_h = int(ROW_H * (0.5 + 0.15 * math.sin(t * 4)))
-                        accent_rect = pygame.Rect(row_rect.x, ry + (ROW_H - bar_anim_h) // 2,
-                                                  scaled(3), bar_anim_h)
-                        pygame.draw.rect(screen, ACCENT, accent_rect, border_radius=scaled(1))
+                # Size + age on second line
+                entry = manifest[name]
+                entry_path = entry.get("path", "")
+                entry_size = 0
+                if os.path.isdir(entry_path):
+                    for dp, _, fns in os.walk(entry_path):
+                        for fn in fns:
+                            try:
+                                entry_size += os.path.getsize(os.path.join(dp, fn))
+                            except OSError:
+                                pass
+                if entry_size >= 1 << 30:
+                    es = f"{entry_size / (1 << 30):.1f}GB"
+                elif entry_size >= 1 << 20:
+                    es = f"{entry_size / (1 << 20):.0f}MB"
+                else:
+                    es = f"{entry_size / (1 << 10):.0f}KB"
+
+                last_used = entry.get("last_used", 0)
+                if last_used > 0:
+                    age = time.time() - last_used
+                    if age < 3600:
+                        age_str = f"{int(age / 60)}m ago"
+                    elif age < 86400:
+                        age_str = f"{int(age / 3600)}h ago"
                     else:
-                        if i % 2 == 0:
-                            pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.3),
-                                             row_rect, border_radius=scaled(4))
-                        pygame.draw.rect(screen, _blend(BG, ACCENT, 0.12),
-                                         row_rect, 1, border_radius=scaled(4))
+                        age_str = f"{int(age / 86400)}d ago"
+                else:
+                    age_str = "never"
+                detail = F['sm'].render(f"{es} \u2022 {age_str}", True, ACCENT if is_sel else TXT_DIM)
+                screen.blit(detail, (rect.x + scaled(10), rect.y + scaled(26)))
 
-                    # Disc icon
-                    icon_cx = LEFT_PAD + scaled(24)
-                    icon_cy = ry + ROW_H // 2
-                    icon_r = scaled(12)
-                    _icon_cache(screen, icon_cx, icon_cy, icon_r, t, is_sel)
-
-                    # Game name
-                    text_x = LEFT_PAD + scaled(46)
-                    max_text_w = W - text_x - scaled(80)
-                    title_font = F['md_b'] if is_sel else F['md']
-                    title_color = HDR if is_sel else TXT
-                    label_text = truncate(name, title_font, max_text_w)
-                    label_surf = title_font.render(label_text, True, title_color)
-                    screen.blit(label_surf, (text_x, ry + scaled(6)))
-
-                    # Size + last used
-                    entry = manifest[name]
-                    es = _format_size(_entry_size(entry))
-                    age = _age_str(entry.get("last_used", 0))
-                    detail_text = f"{es}  \u2022  Last played: {age}"
-                    detail_color = ACCENT if is_sel else TXT_DIM
-                    detail_surf = F['sm'].render(detail_text, True, detail_color)
-                    screen.blit(detail_surf, (text_x, ry + scaled(28)))
-
-                    # Delete hint on selected row
-                    if is_sel:
-                        x_surf = F['sm'].render("\u2716", True, (200, 80, 70))
-                        screen.blit(x_surf, (W - LEFT_PAD - scaled(18),
-                                             ry + ROW_H // 2 - x_surf.get_height() // 2))
-
-                # Separator line
-                sep_y = ry + ROW_H + ROW_GAP // 2
-                if ry + ROW_H > content_top and sep_y < H - HINT_H:
-                    pygame.draw.line(screen, _blend(BG, ACCENT, 0.1),
-                                     (LEFT_PAD + scaled(8), sep_y),
-                                     (W - LEFT_PAD - scaled(8), sep_y), 1)
-
-                draw_y += ROW_H + ROW_GAP
-
-            screen.set_clip(None)
+                y += scaled(50)
 
             # Scroll indicator
-            if content_h > view_h:
-                track_x = W - scaled(4)
-                track_top = content_top
-                track_h = view_h
-                thumb_h = max(scaled(20), int(track_h * view_h / content_h))
-                thumb_y = track_top + int((track_h - thumb_h) * scroll_y /
-                                          max(1, content_h - view_h))
-                pygame.draw.rect(screen, _blend(BG, ACCENT, 0.15),
-                                 (track_x, track_top, scaled(3), track_h),
-                                 border_radius=scaled(1))
-                pygame.draw.rect(screen, _blend(BG, ACCENT, 0.5),
-                                 (track_x, thumb_y, scaled(3), thumb_h),
-                                 border_radius=scaled(1))
+            if total > VIS:
+                track_top = scaled(55)
+                track_h = VIS * scaled(50)
+                thumb_h = max(scaled(12), int(track_h * VIS / total))
+                thumb_y = track_top + int((track_h - thumb_h) * scroll / max(1, total - VIS))
+                bar_x = W - scaled(4)
+                pygame.draw.rect(screen, BAR_BG, (bar_x, track_top, scaled(3), track_h), border_radius=1)
+                pygame.draw.rect(screen, ACCENT, (bar_x, thumb_y, scaled(3), thumb_h), border_radius=1)
 
         hints = "[A] Delete   [Y] Clear All   [B] Back" if total else "[B] Back"
         draw_hint_bar(hints)
-
         pygame.display.flip()
-        if _need_fade:
-            fade_from_black(); _need_fade = False
-        clock.tick(60)
+        clock.tick(30)
 
 
 def evict_cached_picker():
@@ -3798,13 +3739,6 @@ def screen_main_menu():
                 label = label_font.render(name, True, label_color)
                 label_rect = label.get_rect(centerx=rect.centerx, y=rect.y + int(cell_h * 0.72))
                 screen.blit(label, label_rect)
-
-                # Subtle hint for Memory Cards cell
-                if name == "Memory Cards" and is_sel:
-                    hint_surf = F['sm'].render("Hold L2 for BIOS", True, TXT_DIM)
-                    hint_rect = hint_surf.get_rect(centerx=rect.centerx,
-                                                   y=rect.y + int(cell_h * 0.88))
-                    screen.blit(hint_surf, hint_rect)
 
         # Description hint for selected item
         sel_idx = sel_row * COLS + sel_col
@@ -5125,6 +5059,66 @@ def _launch_retroarch_standalone():
     pygame.event.clear()
 
 
+def _launch_ps2_bios(user):
+    """Boot to PS2 BIOS via RetroArch with the mounted memcard loaded."""
+    global screen, W, H, F, joy
+    core = active_cfg.get("core_path", "")
+    if not core or not os.path.exists(core):
+        play_sfx('error')
+        draw_center_msg("Error", "PS2 core not found!", "Check Settings > RetroArch Core")
+        time.sleep(2)
+        return
+    ra = _find_retroarch()
+    if not ra:
+        play_sfx('error')
+        draw_center_msg("Error", "RetroArch not found!", "Check your PATH or install RetroArch")
+        time.sleep(2)
+        return
+    # Load the mounted memory card
+    meta = get_user_meta(user)
+    card = meta.get("last_card", "")
+    if card:
+        load_memcard(user, card)
+    # Launch RetroArch with core but no content = boots to BIOS
+    try:
+        subprocess.run([ra, "-L", core])
+    except Exception as e:
+        play_sfx('error')
+        draw_center_msg("Launch Error", str(e)[:60], "Press any button")
+        _wait_any_button()
+    # Save memcard back after BIOS session
+    if card:
+        save_memcard(user, card)
+    # Reinit display
+    screen, W, H, F, joy = init_display()
+    init_sounds()
+    apply_volume()
+    pygame.event.clear()
+
+
+def _is_l2_held():
+    """Check if L2 trigger is currently held (axis or button)."""
+    if joy is None:
+        return False
+    # L2 is commonly axis 2, 4, or 5 depending on controller
+    # SDL maps triggers as axes with rest at -1.0, pressed at +1.0
+    for axis_id in (2, 4, 5):
+        try:
+            val = joy.get_axis(axis_id)
+            if val > 0.3:  # trigger pulled past ~65%
+                return True
+        except Exception:
+            pass
+    # Some controllers map L2 as a button (button 6 or 10)
+    for btn_id in (6, 10):
+        try:
+            if joy.get_button(btn_id):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def main():
     """Main application loop — profile first, then hub menu."""
     global screen, W, H, F, joy, active_cfg
@@ -5174,8 +5168,18 @@ def main():
                         break  # back to card picker
 
         elif choice == "Memory Cards":
-            # Card management directly
-            screen_memcard_picker(user)
+            # L2 held = boot to PS2 BIOS for save management
+            if _is_l2_held():
+                if confirm_dialog("Boot to PS2 BIOS?\nManage saves in the real PS2 system menu."):
+                    _launch_ps2_bios(user)
+                    screen, W, H, F, joy = init_display()
+                    init_sounds()
+                    apply_volume()
+                    show_welcome_back(user)
+                    pygame.event.clear()
+            else:
+                # Card management directly
+                screen_memcard_picker(user)
 
         elif choice == "Cache":
             cache_manager_screen()
