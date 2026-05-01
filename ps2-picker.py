@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.7'
+VERSION = '0.1.8'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -736,14 +736,15 @@ class _PS2Memcard:
                 text = seg.decode('latin-1', errors='replace')
             # Normalize full-width Latin/digits to ASCII equivalents
             text = unicodedata.normalize('NFKC', text).strip()
-            # Filter to only printable characters
-            text = ''.join(c for c in text if c.isprintable())
+            # Keep only characters the pygame font can render:
+            # ASCII printable + Latin-1 Supplement + Latin Extended A/B
+            text = ''.join(c for c in text if c.isprintable() and ord(c) < 0x250)
             if text:
                 parts.append(text)
         title = ' - '.join(parts) if parts else None
 
-        # If title is still mostly non-printable or empty, discard
-        if title and sum(c.isprintable() for c in title) < len(title) // 2:
+        # If title ended up empty or too short, discard
+        if not title or len(title.replace(' ', '').replace('-', '')) < 2:
             title = None
 
         # ── Icon filename at 0x104 (64 bytes, null-terminated ASCII) ──
@@ -790,12 +791,18 @@ class _PS2Memcard:
             rgba[j + 3] = 255 if (p >> 15) else 0    # A
         return bytes(rgba)
 
+    # PS2 system directories that are not game saves
+    _SYSTEM_DIRS = {'badata-system', 'baexec-system', 'biexec-system',
+                    'bxdata-system', 'bwexec-system'}
+
     def list_saves(self):
         root = self._dirents(self._rootdir_cluster, 512)
         saves = []
         for e in root:
             if e['name'] in ('.', '..', ''): continue
             if not (e['mode'] & _MODE_EXISTS) or not (e['mode'] & _MODE_DIR): continue
+            # Skip known PS2 system directories
+            if e['name'].lower() in self._SYSTEM_DIRS: continue
             subs = self._dirents(e['cluster'], e['length'])
             files, total, icon_sys_data = [], 0, None
             # Map filenames to their cluster/length for icon lookup
