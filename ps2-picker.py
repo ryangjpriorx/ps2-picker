@@ -20,18 +20,10 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.25'
-
-# ─── Update Channel ─────────────────────────────────────────────
-# 0 = stable (pulls from main branch)
-# 1 = testing (pulls from testing branch)
-UPDATE_CHANNEL = 0
+VERSION = '0.1.26'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
-import re
-from urllib.request import urlopen, Request
-from urllib.error import URLError, HTTPError
 
 # Suppress pygame welcome banner and warnings before import
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
@@ -69,6 +61,7 @@ DEFAULT_CONFIG = {
     "volume": 0.5,                                       # UI sound volume (0.0–1.0)
     "muted": False,                                      # Global mute toggle
     "setup_complete": False,                              # First-time wizard completed?
+    "update_channel": 0,                              # 0 = stable/main, 1 = testing
 }
 
 # ═══ Configuration System ══════════════════════════════════════
@@ -2197,7 +2190,7 @@ def settings_menu(username=None):
                 ch_color = (220, 160, 50) if ch_val == 1 else SUCCESS
                 ch_surf = F['sm'].render(ch_label, True, ch_color if is_sel else TXT_DIM)
                 screen.blit(ch_surf, (rect.right - ch_surf.get_width() - scaled(12),
-                                      rect.y + ROW_H_S // 2 - ch_surf.get_height() // 2))
+                                      rect.y + (scaled(38) - ch_surf.get_height()) // 2))
             elif key in ("theme", "controller_map", "cache_manager"):
                 # Show a chevron to indicate submenu
                 if key == "cache_manager":
@@ -5235,156 +5228,9 @@ def main():
                 pygame.quit(); sys.exit()
 
 
-# ═══ Self-Updater ═══════════════════════════════════════════════
-
-_UPDATE_REPO = "ryangjpriorx/ps2-picker"
-_UPDATE_BRANCHES = {0: "main", 1: "testing"}
-_UPDATE_FILES = ["ps2_picker.py", "ps2_checker.py"]
-_UPDATE_TIMEOUT = 10  # seconds
-
-
-def _parse_version(text):
-    """Extract VERSION = 'x.y.z' from source text and return as tuple."""
-    m = re.search(r'VERSION\s*=\s*[\x27"](\d+(?:\.\d+)*)[\x27"]', text)
-    if not m:
-        return None
-    parts = m.group(1).split('.')
-    try:
-        return tuple(int(p) for p in parts)
-    except ValueError:
-        return None
-
-
-def _download_raw(branch, filename):
-    """Download a file from GitHub raw and return its content as string."""
-    url = f"https://raw.githubusercontent.com/{_UPDATE_REPO}/{branch}/{filename}"
-    req = Request(url, headers={"User-Agent": "PS2Picker-Updater"})
-    resp = urlopen(req, timeout=_UPDATE_TIMEOUT)
-    return resp.read().decode('utf-8', errors='replace')
-
-
-def _wait_any_button():
-    """Block until any key or joystick button is pressed."""
-    pygame.event.clear()
-    while True:
-        for ev in pygame.event.get():
-            if ev.type == pygame.QUIT:
-                pygame.quit(); sys.exit()
-            if ev.type in (pygame.KEYDOWN, pygame.JOYBUTTONDOWN):
-                return
-        clock.tick(30)
-
-
-def _self_update():
-    """Check for updates and replace files if a newer version is available.
-
-    Reads UPDATE_CHANNEL to pick the branch. Downloads each file from GitHub,
-    compares VERSION strings. If remote is newer, overwrites local files.
-    If versions match, continues silently. On any failure, notifies the user
-    but allows them to proceed.
-
-    Returns True if files were updated (caller should re-exec), False otherwise.
-    """
-    branch = _UPDATE_BRANCHES.get(UPDATE_CHANNEL, "main")
-    channel_label = "testing" if UPDATE_CHANNEL == 1 else "stable"
-
-    # Show a brief status message while checking
-    screen.fill(BG)
-    msg = F['md'].render(f"Checking for updates ({channel_label})...", True, TXT)
-    screen.blit(msg, msg.get_rect(center=(W // 2, H // 2)))
-    pygame.display.flip()
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    updated_any = False
-    newest_ver = None
-
-    for filename in _UPDATE_FILES:
-        local_path = os.path.join(script_dir, filename)
-
-        # Read local version (if file exists)
-        local_ver = None
-        if os.path.isfile(local_path):
-            try:
-                with open(local_path, 'r', encoding='utf-8', errors='replace') as fh:
-                    local_ver = _parse_version(fh.read())
-            except Exception:
-                local_ver = None
-
-        # Download remote version
-        try:
-            remote_text = _download_raw(branch, filename)
-        except Exception as e:
-            # Network failure — notify but allow proceeding
-            screen.fill(BG)
-            err1 = F['md'].render(f"Update check failed for {filename}", True, HDR)
-            err2 = F['sm'].render(str(e)[:80], True, TXT_DIM)
-            err3 = F['sm'].render("Press any button to continue", True, ACCENT)
-            screen.blit(err1, err1.get_rect(center=(W // 2, H // 2 - scaled(20))))
-            screen.blit(err2, err2.get_rect(center=(W // 2, H // 2 + scaled(4))))
-            screen.blit(err3, err3.get_rect(center=(W // 2, H // 2 + scaled(28))))
-            pygame.display.flip()
-            _wait_any_button()
-            continue
-
-        remote_ver = _parse_version(remote_text)
-
-        # Compare versions
-        if remote_ver is None:
-            continue  # Can't parse remote version — skip
-
-        if local_ver is not None and remote_ver <= local_ver:
-            continue  # Already up to date
-
-        # Remote is newer (or local file missing/unparseable) — replace
-        try:
-            tmp_path = local_path + ".update_tmp"
-            with open(tmp_path, 'w', encoding='utf-8') as fh:
-                fh.write(remote_text)
-            if IS_WINDOWS and os.path.exists(local_path):
-                os.remove(local_path)
-            os.rename(tmp_path, local_path)
-            updated_any = True
-            newest_ver = remote_ver
-        except Exception as e:
-            screen.fill(BG)
-            err1 = F['md'].render(f"Failed to update {filename}", True, HDR)
-            err2 = F['sm'].render(str(e)[:80], True, TXT_DIM)
-            err3 = F['sm'].render("Press any button to continue", True, ACCENT)
-            screen.blit(err1, err1.get_rect(center=(W // 2, H // 2 - scaled(20))))
-            screen.blit(err2, err2.get_rect(center=(W // 2, H // 2 + scaled(4))))
-            screen.blit(err3, err3.get_rect(center=(W // 2, H // 2 + scaled(28))))
-            pygame.display.flip()
-            _wait_any_button()
-
-    if updated_any:
-        ver_str = '.'.join(str(p) for p in newest_ver) if newest_ver else '?'
-        screen.fill(BG)
-        u1 = F['lg'].render("Update Applied!", True, HDR)
-        u2 = F['md'].render(f"Updated to v{ver_str} ({channel_label})", True, ACCENT)
-        u3 = F['sm'].render("Restarting...", True, TXT_DIM)
-        screen.blit(u1, u1.get_rect(center=(W // 2, H // 2 - scaled(20))))
-        screen.blit(u2, u2.get_rect(center=(W // 2, H // 2 + scaled(6))))
-        screen.blit(u3, u3.get_rect(center=(W // 2, H // 2 + scaled(28))))
-        pygame.display.flip()
-        time.sleep(2)
-        return True
-
-    return False
-
 
 # ═══ Entry Point ═══════════════════════════════════════════════
 
 init_sounds()
-
-# Self-update check (skip with --skip-update)
-if '--skip-update' not in sys.argv:
-    if _self_update():
-        # Files were replaced — re-exec to load the new version
-        pygame.quit()
-        os.execv(sys.executable, [sys.executable] + sys.argv + ['--skip-update'])
-else:
-    # Remove the flag so it doesn't persist into future re-execs
-    sys.argv = [a for a in sys.argv if a != '--skip-update']
-
 show_splash()
 main()
