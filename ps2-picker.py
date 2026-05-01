@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.13'
+VERSION = '0.1.14'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -4034,6 +4034,10 @@ def screen_memcard_picker(user):
             if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["alt"]:
                 do_mount = True
             if do_mount and sel < len(cards):
+                # Save mounted card to meta immediately so badge updates
+                meta = get_user_meta(user)
+                meta["last_card"] = cards[sel]
+                save_user_meta(user, meta)
                 play_sfx('select'); fade_to_black(); return cards[sel]
 
             # Delete card (X button)
