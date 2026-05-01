@@ -2,12 +2,12 @@
 
 # PS2 Picker
 
-A controller‑first PS2 game launcher designed specifically for **RG35XX‑H**, **RG35XX‑Plus**, and similar handhelds using **Moonlight/Sunshine** to stream from a PC. Runs at **640×480**, uses a **high‑contrast handheld‑friendly UI**, and provides **fast game launching**, **per‑user memory cards**, and a **local cache** to reduce load times over streaming.
+A controller‑first PS2 game launcher designed specifically for **RG35XX‑H**, **RG35XX‑Plus**, and similar handhelds using **Moonlight/Sunshine** to stream from a PC. Designed for **640×480** but features auto-scaling, uses a **high‑contrast handheld‑friendly UI**, and provides **fast game launching**, **per‑user memory cards**, and a **local cache** to reduce load times over streaming.
 
 ## ✨ Key Features
 
 ### 🎮 Built for Handheld Streaming (RG35XX‑H, RG35XX‑Plus, etc.)
-- UI scaled and tuned for 640×480 displays
+- UI scaled and tuned for 640×480 displays (but scales to your resolution)
 - Large hit‑targets, readable fonts, and high‑contrast color palette
 - Fully navigable with D‑pad + ABXY + Start/Select
 - Works seamlessly through Sunshine's virtual Xbox controller
