@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.0.17'
+VERSION = '0.0.18'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
@@ -813,33 +813,35 @@ def draw_toast(msg, color=SUCCESS, duration=1.2):
         clock.tick(30)
 
 
-def fade_to_black(duration=0.12):
-    """Fade current screen content to black."""
-    snapshot = screen.copy()
+# ─── Screen transition system ───────────────────────────────────
+# Crossfade: old screen blends smoothly into the new one.
+# fade_to_black()   = capture the current screen (instant, no animation)
+# fade_from_black() = crossfade from captured snapshot to current content
+_transition_snapshot = None
+
+def fade_to_black(duration=None):
+    """Capture the current screen for a later crossfade. Instant."""
+    global _transition_snapshot
+    _transition_snapshot = screen.copy()
+
+
+def fade_from_black(duration=0.18):
+    """Crossfade from the stored snapshot to the current screen content."""
+    global _transition_snapshot
+    if _transition_snapshot is None:
+        return
+    new_frame = screen.copy()
     steps = max(1, int(duration * 60))
     for i in range(1, steps + 1):
         t = i / steps
-        screen.blit(snapshot, (0, 0))
-        overlay = pygame.Surface((W, H))
-        overlay.fill((0, 0, 0))
-        overlay.set_alpha(int(255 * t))
-        screen.blit(overlay, (0, 0))
+        # Blend: old * (1-t) + new * t
+        screen.blit(_transition_snapshot, (0, 0))
+        new_frame.set_alpha(int(255 * t))
+        screen.blit(new_frame, (0, 0))
         pygame.display.flip()
         clock.tick(60)
-
-
-def fade_from_black(duration=0.12):
-    """Fade from black to whatever is currently drawn on screen."""
-    snapshot = screen.copy()
-    steps = max(1, int(duration * 60))
-    for i in range(1, steps + 1):
-        t = i / steps
-        screen.fill((0, 0, 0))
-        snapshot.set_alpha(int(255 * t))
-        screen.blit(snapshot, (0, 0))
-        pygame.display.flip()
-        clock.tick(60)
-    snapshot.set_alpha(255)  # reset
+    new_frame.set_alpha(255)
+    _transition_snapshot = None
 
 
 def _wait_any_button():
