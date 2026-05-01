@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.2'
+VERSION = '0.1.3'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime
@@ -3403,175 +3403,352 @@ def screen_main_menu():
         clock.tick(60)  # 60fps for smooth icon animations
 
 
-# ═══ Screen: User Picker ═══════════════════════════════════════
+# ═══ Screen: User Picker (animated card UI) ════════════════════
+
+def _icon_user(surf, cx, cy, r, t, selected):
+    """User/person icon — head circle + body arc."""
+    pulse = 1.0 + 0.05 * math.sin(t * 2.5) if selected else 1.0
+    pr = int(r * pulse)
+    color = HDR if selected else ACCENT
+    # Head
+    head_r = int(pr * 0.3)
+    head_y = cy - int(pr * 0.25)
+    pygame.draw.circle(surf, color, (cx, head_y), head_r, 2)
+    # Body arc
+    body_top = cy + int(pr * 0.1)
+    body_w = int(pr * 0.7)
+    body_h = int(pr * 0.55)
+    body_rect = pygame.Rect(cx - body_w, body_top, body_w * 2, body_h * 2)
+    pygame.draw.arc(surf, color, body_rect, math.radians(15), math.radians(165), 2)
+
+
+def _icon_add_user(surf, cx, cy, r, t, selected):
+    """Plus icon for creating a new profile."""
+    pulse = 1.0 + 0.06 * math.sin(t * 3) if selected else 1.0
+    pr = int(r * pulse)
+    color = SUCCESS if selected else ACCENT
+    arm = int(pr * 0.5)
+    w = 3 if selected else 2
+    pygame.draw.line(surf, color, (cx - arm, cy), (cx + arm, cy), w)
+    pygame.draw.line(surf, color, (cx, cy - arm), (cx, cy + arm), w)
+    # Circle around it
+    pygame.draw.circle(surf, color, (cx, cy), int(pr * 0.7), 2)
+
+
+def _icon_card(surf, cx, cy, r, t, selected):
+    """Memory card icon (smaller version for card picker)."""
+    _icon_memcards(surf, cx, cy, r, t, selected)
+
+
+def _icon_add_card(surf, cx, cy, r, t, selected):
+    """Plus icon for creating a new card."""
+    _icon_add_user(surf, cx, cy, r, t, selected)
+
+
+def _draw_card_grid(items, sel, start_time, title, subtitle, hint_text, cols=3):
+    """Shared animated card grid drawer for picker screens.
+    items = [(label, icon_fn, subtitle_text), ...]
+    Returns nothing — draws one frame."""
+    t = time.time() - start_time
+    HEADER_H = scaled(42)
+    HINT_H = scaled(22)
+
+    screen.fill(BG)
+
+    # Header
+    t_surf = F['lg'].render(title, True, HDR)
+    screen.blit(t_surf, (scaled(12), scaled(10)))
+    if subtitle:
+        sub_surf = F['sm'].render(subtitle, True, TXT_DIM)
+        screen.blit(sub_surf, (W - sub_surf.get_width() - scaled(12), scaled(16)))
+    pygame.draw.line(screen, _blend(BG, ACCENT, 0.3),
+                     (scaled(12), HEADER_H), (W - scaled(12), HEADER_H), 1)
+
+    total = len(items)
+    rows = max(1, (total + cols - 1) // cols)
+
+    # Grid area
+    grid_top = HEADER_H + scaled(10)
+    grid_bot = H - HINT_H - scaled(8)
+    grid_left = scaled(16)
+    grid_right = W - scaled(16)
+    grid_w = grid_right - grid_left
+    grid_h = grid_bot - grid_top
+    gap = scaled(8)
+    cell_w = (grid_w - gap * (cols - 1)) // cols
+    cell_h = min((grid_h - gap * (rows - 1)) // max(1, rows), scaled(140))
+
+    # Center grid vertically if fewer rows than space allows
+    total_grid_h = rows * cell_h + (rows - 1) * gap
+    grid_y_offset = grid_top + max(0, (grid_h - total_grid_h) // 2)
+
+    icon_r = min(cell_w, cell_h) // 4
+
+    for i, (label, icon_fn, sub) in enumerate(items):
+        row = i // cols
+        col = i % cols
+        is_sel = (i == sel)
+
+        x = grid_left + col * (cell_w + gap)
+        y = grid_y_offset + row * (cell_h + gap)
+        rect = pygame.Rect(x, y, cell_w, cell_h)
+
+        # Animated glow for selected cell
+        if is_sel:
+            glow_alpha = int(100 + 60 * math.sin(t * 3))
+            glow_color = _blend(BG, ACCENT, glow_alpha / 255)
+            glow_rect = rect.inflate(scaled(6), scaled(6))
+            pygame.draw.rect(screen, glow_color, glow_rect, border_radius=scaled(10))
+            pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(8))
+            pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=scaled(8))
+        else:
+            pygame.draw.rect(screen, BAR_BG, rect, border_radius=scaled(8))
+            pygame.draw.rect(screen, _blend(BAR_BG, ACCENT, 0.2), rect, 1, border_radius=scaled(8))
+
+        # Icon
+        icon_cx = rect.centerx
+        icon_cy = rect.y + int(cell_h * 0.38)
+        icon_fn(screen, icon_cx, icon_cy, icon_r, t, is_sel)
+
+        # Label
+        lf = F['md_b'] if is_sel else F['md']
+        lc = HDR if is_sel else TXT
+        lab = lf.render(truncate(label, F['md'], cell_w - scaled(8)), True, lc)
+        lab_rect = lab.get_rect(centerx=rect.centerx, y=rect.y + int(cell_h * 0.68))
+        screen.blit(lab, lab_rect)
+
+        # Subtitle (small, under label)
+        if sub:
+            sf = F['sm'].render(sub, True, ACCENT if is_sel else TXT_DIM)
+            sf_rect = sf.get_rect(centerx=rect.centerx, y=rect.y + int(cell_h * 0.84))
+            screen.blit(sf, sf_rect)
+
+    draw_hint_bar(hint_text)
+    pygame.display.flip()
+
+
+def _grid_nav(ev, sel, total, cols, joy_ref, last_joy_ref):
+    """Handle navigation input for card grids. Returns (new_sel, handled)."""
+    rows = max(1, (total + cols - 1) // cols)
+    row = sel // cols
+    col = sel % cols
+    handled = False
+
+    if ev.type == pygame.KEYDOWN:
+        if ev.key == pygame.K_LEFT:
+            sel = max(0, sel - 1); handled = True
+        elif ev.key == pygame.K_RIGHT:
+            sel = min(total - 1, sel + 1); handled = True
+        elif ev.key == pygame.K_UP:
+            new = sel - cols
+            if new >= 0: sel = new; handled = True
+        elif ev.key == pygame.K_DOWN:
+            new = sel + cols
+            if new < total: sel = new; handled = True
+    elif ev.type == pygame.JOYHATMOTION:
+        hx, hy = ev.value
+        if hx == -1: sel = max(0, sel - 1); handled = True
+        elif hx == 1: sel = min(total - 1, sel + 1); handled = True
+        if hy == 1:
+            new = sel - cols
+            if new >= 0: sel = new; handled = True
+        elif hy == -1:
+            new = sel + cols
+            if new < total: sel = new; handled = True
+
+    if handled:
+        play_sfx('navigate')
+    return sel, handled
+
 
 def screen_user_picker():
     """Pick or create a user profile. Returns username or None."""
     sel = 0
-    scroll = 0
     last_joy = 0
     _need_fade = True
+    start_time = time.time()
+    COLS = 3
 
     while True:
         users = get_users()
-        items = [(u, False) for u in users] + [("+ New Profile", True)]
-        sel = max(0, min(sel, len(items) - 1))
+        # Build items: each user + "New Profile" at the end
+        items = []
+        for u in users:
+            cards = get_cards(u)
+            sub = f"{len(cards)} card{'s' if len(cards) != 1 else ''}"
+            items.append((u, _icon_user, sub))
+        items.append(("+ New Profile", _icon_add_user, "Create a profile"))
+        total = len(items)
+        sel = max(0, min(sel, total - 1))
         now = time.time()
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
-            if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); fade_to_black(); return None
-                if ev.key == pygame.K_UP:
-                    sel = max(0, sel - 1); play_sfx('navigate')
-                if ev.key == pygame.K_DOWN:
-                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
-                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    if sel == len(items) - 1:
-                        play_sfx('select')
-                        name = on_screen_keyboard("Enter Username")
-                        if name and name.strip():
-                            name = name.strip()
-                            if name not in users:
-                                create_user(name)
-                            fade_to_black(); return name
-                    else:
-                        play_sfx('select'); fade_to_black(); return users[sel]
-            if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == BTN["confirm"]:
-                    if sel == len(items) - 1:
-                        play_sfx('select')
-                        name = on_screen_keyboard("Enter Username")
-                        if name and name.strip():
-                            name = name.strip()
-                            if name not in users:
-                                create_user(name)
-                            fade_to_black(); return name
-                    else:
-                        play_sfx('select'); fade_to_black(); return users[sel]
-                if ev.button == BTN["back"]:
-                    play_sfx('back'); fade_to_black(); return None
-            if ev.type == pygame.JOYHATMOTION:
-                hx, hy = ev.value
-                if hy == 1:
-                    sel = max(0, sel - 1); play_sfx('navigate')
-                if hy == -1:
-                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
 
+            # Navigation
+            new_sel, handled = _grid_nav(ev, sel, total, COLS, joy, last_joy)
+            if handled:
+                sel = new_sel
+                continue
+
+            # Confirm
+            confirmed = False
+            if ev.type == pygame.KEYDOWN and ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                confirmed = True
+            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["confirm"]:
+                confirmed = True
+
+            if confirmed:
+                if sel == total - 1:  # New profile
+                    play_sfx('select')
+                    name = on_screen_keyboard("Enter Username")
+                    if name and name.strip():
+                        name = name.strip()
+                        if name not in users:
+                            create_user(name)
+                        fade_to_black(); return name
+                else:
+                    play_sfx('select'); fade_to_black(); return users[sel]
+
+            # Back / Exit
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                play_sfx('back'); fade_to_black(); return None
+            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
+                play_sfx('back'); fade_to_black(); return None
+
+        # Analog stick
         if joy is not None and now - last_joy > DPAD_DELAY / 1000:
             moved = False
-            ya = joy.get_axis(1)
-            if ya < -0.5:
-                sel = max(0, sel - 1); moved = True
-            elif ya > 0.5:
-                sel = min(len(items) - 1, sel + 1); moved = True
+            try:
+                ax = joy.get_axis(0)
+                ay = joy.get_axis(1)
+                if ax < -0.5: sel = max(0, sel - 1); moved = True
+                elif ax > 0.5: sel = min(total - 1, sel + 1); moved = True
+                if ay < -0.5:
+                    new = sel - COLS
+                    if new >= 0: sel = new; moved = True
+                elif ay > 0.5:
+                    new = sel + COLS
+                    if new < total: sel = new; moved = True
+            except Exception:
+                pass
             if moved:
                 play_sfx('navigate'); last_joy = now
 
-        if sel < scroll:
-            scroll = sel
-        if sel >= scroll + VISIBLE:
-            scroll = sel - VISIBLE + 1
-
-        screen.fill(BG)
-        draw_header("Select Profile", None,
-                     f"{len(users)} profile{'s' if len(users) != 1 else ''}")
-        draw_list(items, sel, scroll)
-
-        draw_hint_bar("[A] Select   [B] Exit")
-        pygame.display.flip()
+        # Draw
+        _draw_card_grid(items, sel, start_time,
+                        "Select Profile",
+                        f"{len(users)} profile{'s' if len(users) != 1 else ''}",
+                        "[A] Select   [B] Exit",
+                        cols=COLS)
         if _need_fade:
             fade_from_black(); _need_fade = False
-        clock.tick(30)
+        clock.tick(60)
 
 
-# ═══ Screen: Memory Card Picker ════════════════════════════════
+# ═══ Screen: Memory Card Picker (animated card UI) ═════════════
 
 def screen_memcard_picker(user):
     """Pick or create a memory card. Returns card name or None."""
     sel = 0
-    scroll = 0
     last_joy = 0
     _need_fade = True
+    start_time = time.time()
+    COLS = 3
 
     while True:
         cards = get_cards(user)
-        items = [(c, False) for c in cards] + [("+ New Card", True)]
-        sel = max(0, min(sel, len(items) - 1))
+        items = []
+        for c in cards:
+            # Show memcard file count as subtitle
+            card_dir = os.path.join(USERS_DIR, user, "cards", c)
+            files = [f for f in os.listdir(card_dir) if f.endswith('.ps2')] if os.path.isdir(card_dir) else []
+            sub = f"{len(files)} save{'s' if len(files) != 1 else ''}" if files else "Empty"
+            items.append((c, _icon_card, sub))
+        items.append(("+ New Card", _icon_add_card, "Create a card"))
+        total = len(items)
+        sel = max(0, min(sel, total - 1))
         now = time.time()
 
+        _dirty = False
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
-            if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); fade_to_black(); return None
-                if ev.key == pygame.K_UP:
-                    sel = max(0, sel - 1); play_sfx('navigate')
-                if ev.key == pygame.K_DOWN:
-                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
-                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    if sel == len(items) - 1:
-                        play_sfx('select')
-                        name = on_screen_keyboard("Card Name")
-                        if name:
-                            create_card(user, name)
-                    elif sel < len(cards):
-                        play_sfx('select'); fade_to_black(); return cards[sel]
-                if ev.key == pygame.K_DELETE or ev.key == pygame.K_x:
-                    if sel < len(cards) and len(cards) > 1:
-                        if confirm_dialog(f"Delete {cards[sel]}?"):
-                            play_sfx('select')
-                            delete_card(user, cards[sel])
-            if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == BTN["confirm"]:
-                    if sel == len(items) - 1:
-                        play_sfx('select')
-                        name = on_screen_keyboard("Card Name")
-                        if name:
-                            create_card(user, name)
-                    elif sel < len(cards):
-                        play_sfx('select'); fade_to_black(); return cards[sel]
-                if ev.button == BTN["back"]:
-                    play_sfx('back'); fade_to_black(); return None
-                if ev.button == BTN["extra"] and sel < len(cards) and len(cards) > 1:
-                    if confirm_dialog(f"Delete {cards[sel]}?"):
-                        play_sfx('select')
-                        delete_card(user, cards[sel])
-            if ev.type == pygame.JOYHATMOTION:
-                hx, hy = ev.value
-                if hy == 1:
-                    sel = max(0, sel - 1); play_sfx('navigate')
-                if hy == -1:
-                    sel = min(len(items) - 1, sel + 1); play_sfx('navigate')
 
+            # Navigation
+            new_sel, handled = _grid_nav(ev, sel, total, COLS, joy, last_joy)
+            if handled:
+                sel = new_sel
+                continue
+
+            # Confirm
+            confirmed = False
+            if ev.type == pygame.KEYDOWN and ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                confirmed = True
+            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["confirm"]:
+                confirmed = True
+
+            if confirmed:
+                if sel == total - 1:  # New card
+                    play_sfx('select')
+                    name = on_screen_keyboard("Card Name")
+                    if name and name.strip():
+                        create_card(user, name.strip())
+                    _dirty = True; break
+                elif sel < len(cards):
+                    play_sfx('select'); fade_to_black(); return cards[sel]
+
+            # Delete card (X button)
+            do_delete = False
+            if ev.type == pygame.KEYDOWN and (ev.key == pygame.K_DELETE or ev.key == pygame.K_x):
+                do_delete = True
+            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["extra"]:
+                do_delete = True
+            if do_delete and sel < len(cards) and len(cards) > 1:
+                if confirm_dialog(f"Delete {cards[sel]}?"):
+                    play_sfx('select')
+                    delete_card(user, cards[sel])
+                    sel = min(sel, max(0, len(cards) - 2))
+                _dirty = True; break
+
+            # Back
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                play_sfx('back'); fade_to_black(); return None
+            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
+                play_sfx('back'); fade_to_black(); return None
+
+        if _dirty:
+            continue
+
+        # Analog stick
         if joy is not None and now - last_joy > DPAD_DELAY / 1000:
             moved = False
-            ya = joy.get_axis(1)
-            if ya < -0.5:
-                sel = max(0, sel - 1); moved = True
-            elif ya > 0.5:
-                sel = min(len(items) - 1, sel + 1); moved = True
+            try:
+                ax = joy.get_axis(0)
+                ay = joy.get_axis(1)
+                if ax < -0.5: sel = max(0, sel - 1); moved = True
+                elif ax > 0.5: sel = min(total - 1, sel + 1); moved = True
+                if ay < -0.5:
+                    new = sel - COLS
+                    if new >= 0: sel = new; moved = True
+                elif ay > 0.5:
+                    new = sel + COLS
+                    if new < total: sel = new; moved = True
+            except Exception:
+                pass
             if moved:
                 play_sfx('navigate'); last_joy = now
 
-        if sel < scroll:
-            scroll = sel
-        if sel >= scroll + VISIBLE:
-            scroll = sel - VISIBLE + 1
-
-        screen.fill(BG)
-        draw_header(f"{user}'s Cards", None,
-                     f"{len(cards)} card{'s' if len(cards) != 1 else ''}")
-        draw_list(items, sel, scroll)
-
-        draw_hint_bar("[A] Select   [B] Back   [X] Delete card")
-        pygame.display.flip()
+        # Draw
+        _draw_card_grid(items, sel, start_time,
+                        f"{user}'s Cards",
+                        f"{len(cards)} card{'s' if len(cards) != 1 else ''}",
+                        "[A] Select   [X] Delete   [B] Back",
+                        cols=COLS)
         if _need_fade:
             fade_from_black(); _need_fade = False
-        clock.tick(30)
+        clock.tick(60)
 
 
 # ═══ Screen: Game Picker ═══════════════════════════════════════
@@ -3857,7 +4034,7 @@ def _launch_retroarch_standalone():
 
 
 def main():
-    """Main application loop — hub menu with 3x2 grid."""
+    """Main application loop — profile first, then hub menu."""
     global screen, W, H, F, joy, active_cfg
 
     # Load global config
@@ -3870,16 +4047,24 @@ def main():
 
     reload_games()
 
+    # ─── Profile selection (before main menu) ──────────────────
+    while True:
+        user = screen_user_picker()
+        if user is None:
+            # User pressed back on profile picker = exit app
+            if confirm_dialog("Exit PS2 Picker?"):
+                pygame.quit(); sys.exit()
+            continue
+        break
+
+    apply_user_settings(user)
+
+    # ─── Main menu loop ────────────────────────────────────────
     while True:
         choice = screen_main_menu()
 
         if choice == "Games":
-            # Games flow: user → card → game picker
-            user = screen_user_picker()
-            if user is None:
-                continue
-            apply_user_settings(user)
-
+            # Card select → game picker
             while True:
                 card = screen_memcard_picker(user)
                 if card is None:
@@ -3897,11 +4082,7 @@ def main():
                         break  # back to card picker
 
         elif choice == "Memory Cards":
-            # Card management: user → card picker (no game launch)
-            user = screen_user_picker()
-            if user is None:
-                continue
-            apply_user_settings(user)
+            # Card management directly
             screen_memcard_picker(user)
 
         elif choice == "Cache":
@@ -3909,7 +4090,7 @@ def main():
 
         elif choice == "Settings":
             fade_to_black()
-            settings_menu()
+            settings_menu(user)
             reload_games()
 
         elif choice == "RetroArch":
