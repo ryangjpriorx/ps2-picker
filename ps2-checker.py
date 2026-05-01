@@ -9,7 +9,7 @@
      python3 ps2-checker.py --terminal    Force terminal mode (no GUI)
 """
 
-VERSION = '0.0.6'
+VERSION = '0.0.7'
 
 import os, sys, platform, shutil, subprocess, importlib.util, json, string, time, math
 
