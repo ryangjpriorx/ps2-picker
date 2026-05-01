@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.10'
+VERSION = '0.1.11'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -4153,7 +4153,7 @@ def screen_save_browser(user, card):
     CELL_GAP = scaled(6)   # Gap between cells
 
     # Compute cell dimensions from available space
-    grid_top = HEADER_H + GRID_PAD
+    grid_top = HEADER_H + GRID_PAD + scaled(18)  # room for usage bar
     grid_bottom = H - HINT_H - GRID_PAD
     grid_left = GRID_PAD
     grid_right = W - GRID_PAD
@@ -4174,10 +4174,22 @@ def screen_save_browser(user, card):
         if save.icon_pixels and len(save.icon_pixels) == 128 * 128 * 4:
             try:
                 ico_surf = pygame.image.frombuffer(save.icon_pixels, (128, 128), 'RGBA')
+                ico_surf = pygame.transform.flip(ico_surf, False, True)  # flip vertically
                 ico_surf = pygame.transform.smoothscale(ico_surf, (icon_size, icon_size))
                 icon_surfs[idx] = ico_surf
             except Exception:
                 pass
+
+    # Scrolling title state: tracks pixel offset per save for marquee effect
+    _title_scroll_offsets = {}   # idx -> current pixel offset
+    _title_scroll_pause = {}    # idx -> pause timer (seconds remaining)
+    TITLE_SCROLL_SPEED = 30     # pixels per second
+    TITLE_SCROLL_PAUSE = 1.5    # seconds to pause at each end
+
+    # Card usage calculation
+    card_used_bytes = sum(s.size for s in all_saves)
+    CARD_CAPACITY = 8 * 1024 * 1024  # 8 MB
+    card_used_pct = min(1.0, card_used_bytes / CARD_CAPACITY) if CARD_CAPACITY > 0 else 0
 
     def _cell_rect(col, row):
         """Return the pygame.Rect for a grid cell at (col, row)."""
@@ -4494,6 +4506,26 @@ def screen_save_browser(user, card):
         pygame.draw.line(screen, _blend(BG, ACCENT, 0.25),
                          (scaled(8), HEADER_H + 1), (W - scaled(8), HEADER_H + 1), 1)
 
+        # Card usage bar
+        bar_left = scaled(12)
+        bar_right = W - scaled(12)
+        bar_w = bar_right - bar_left
+        bar_h = scaled(5)
+        bar_y = HEADER_H + scaled(3)
+        # Track background
+        pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.4),
+                         (bar_left, bar_y, bar_w, bar_h), border_radius=scaled(2))
+        # Used portion
+        used_w = max(scaled(2), int(bar_w * card_used_pct))
+        bar_color = ACCENT if card_used_pct < 0.85 else (220, 80, 60)
+        pygame.draw.rect(screen, bar_color,
+                         (bar_left, bar_y, used_w, bar_h), border_radius=scaled(2))
+        # Usage label
+        free_bytes = max(0, CARD_CAPACITY - card_used_bytes)
+        usage_text = f"{_format_size(card_used_bytes)} / 8 MB used  \u2022  {_format_size(free_bytes)} free"
+        usage_surf = F['sm'].render(usage_text, True, TXT_DIM)
+        screen.blit(usage_surf, (bar_left, bar_y + bar_h + scaled(1)))
+
         # Draw grid cells for current page
         page_start = page * PER_PAGE
         page_end = min(page_start + PER_PAGE, total)
@@ -4530,9 +4562,10 @@ def screen_save_browser(user, card):
             if idx in icon_surfs:
                 ico = icon_surfs[idx]
                 iw, ih = ico.get_size()
-                # Subtle breathing scale on selected icon
+                # Smooth breathing scale on selected icon (ease-in-out)
                 if is_sel:
-                    s_factor = 1.0 + 0.03 * math.sin(t * 2.5)
+                    breath = (math.sin(t * 1.8 - math.pi / 2) + 1.0) / 2.0
+                    s_factor = 1.0 + 0.04 * breath
                     disp_w = int(iw * s_factor)
                     disp_h = int(ih * s_factor)
                     ico_disp = pygame.transform.smoothscale(ico, (disp_w, disp_h))
@@ -4545,14 +4578,61 @@ def screen_save_browser(user, card):
                 fallback_r = min(icon_size // 2, int(icon_area_h * 0.35))
                 _icon_save_slot(screen, icon_cx, icon_cy, fallback_r, t, is_sel)
 
-            # Title text below icon
+            # Title text below icon — scrolls horizontally if too long
             title_y = rect.bottom - title_line_h - scaled(2)
             title_font = F['sm']
             title_color = HDR if is_sel else TXT
-            title_text = truncate(save.title, title_font, cell_w - scaled(8))
-            ts = title_font.render(title_text, True, title_color)
-            ts_rect = ts.get_rect(centerx=rect.centerx, top=title_y)
-            screen.blit(ts, ts_rect)
+            max_title_w = cell_w - scaled(8)
+            full_title_surf = title_font.render(save.title, True, title_color)
+            ftw = full_title_surf.get_width()
+
+            title_clip = pygame.Rect(rect.x + scaled(4), title_y,
+                                     max_title_w, title_line_h)
+            if ftw <= max_title_w:
+                # Fits — just center it
+                ts_rect = full_title_surf.get_rect(centerx=rect.centerx, top=title_y)
+                screen.set_clip(title_clip)
+                screen.blit(full_title_surf, ts_rect)
+                screen.set_clip(None)
+                _title_scroll_offsets.pop(idx, None)
+                _title_scroll_pause.pop(idx, None)
+            else:
+                # Scrolling marquee
+                overflow = ftw - max_title_w
+                if idx not in _title_scroll_offsets:
+                    _title_scroll_offsets[idx] = 0.0
+                    _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
+
+                pause = _title_scroll_pause.get(idx, 0)
+                scroll_off = _title_scroll_offsets.get(idx, 0)
+                dt_frame = clock.get_time() / 1000.0
+
+                if pause > 0:
+                    _title_scroll_pause[idx] = pause - dt_frame
+                else:
+                    scroll_off += TITLE_SCROLL_SPEED * dt_frame
+                    if scroll_off >= overflow:
+                        scroll_off = overflow
+                        _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
+                        # Reverse direction next cycle
+                    _title_scroll_offsets[idx] = scroll_off
+
+                    # Check if we reached the end and need to bounce back
+                    if scroll_off >= overflow and _title_scroll_pause.get(idx, 0) <= 0:
+                        _title_scroll_offsets[idx] = overflow
+                        _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
+
+                # Bounce: if offset hit overflow, next cycle goes back to 0
+                # Use a ping-pong based on a cycle counter
+                blit_x = rect.x + scaled(4) - int(scroll_off)
+                screen.set_clip(title_clip)
+                screen.blit(full_title_surf, (blit_x, title_y))
+                screen.set_clip(None)
+
+                # Reset to bounce back after reaching end
+                if scroll_off >= overflow and _title_scroll_pause.get(idx, 0) <= 0:
+                    _title_scroll_offsets[idx] = 0.0
+                    _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
 
         # Page dots indicator (if multiple pages)
         if total_pages > 1:
