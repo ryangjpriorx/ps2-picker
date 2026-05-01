@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.11'
+VERSION = '0.1.12'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -300,7 +300,8 @@ DEFAULT_BUTTON_MAP = {
     "back":       1,   # B — cancel, go back
     "extra":      2,   # X — contextual extra action
     "alt":        3,   # Y — alternative action
-    "shoulder_l": 4,   # L1 — toggle hidden files, etc.
+    "shoulder_l": 4,   # L1 — page left, toggle hidden files
+    "shoulder_r": 5,   # R1 — page right
     "select":     6,   # Select — search
     "start":      7,   # Start — settings, confirm
 }
@@ -312,6 +313,7 @@ BTN_LABELS = {
     "extra":      "Extra Action (X)",
     "alt":        "Alt Action (Y)",
     "shoulder_l": "Left Shoulder (L1)",
+    "shoulder_r": "Right Shoulder (R1)",
     "select":     "Menu Select",
     "start":      "Menu Start",
 }
@@ -988,11 +990,11 @@ def truncate(text, font, max_w):
 
 def draw_hint_bar(text):
     """Draw a visible hint bar at the bottom of the screen."""
-    bar_h = scaled(22)
+    bar_h = scaled(32)
     bar_rect = pygame.Rect(0, H - bar_h, W, bar_h)
     pygame.draw.rect(screen, BAR_BG, bar_rect)
     pygame.draw.line(screen, ACCENT, (0, H - bar_h), (W, H - bar_h), 1)
-    hs = F['sm'].render(text, True, HINT)
+    hs = F['md'].render(text, True, HINT)
     screen.blit(hs, hs.get_rect(center=(W // 2, H - bar_h // 2)))
 
 
@@ -3561,7 +3563,7 @@ def screen_main_menu():
 
     COLS, ROWS = 3, 2
     HEADER_H = scaled(42)
-    HINT_H = scaled(22)
+    HINT_H = scaled(32)
 
     while True:
         now = time.time()
@@ -3757,7 +3759,7 @@ def _draw_card_grid(items, sel, start_time, title, subtitle, hint_text, cols=3):
     Returns nothing — draws one frame."""
     t = time.time() - start_time
     HEADER_H = scaled(42)
-    HINT_H = scaled(22)
+    HINT_H = scaled(32)
 
     screen.fill(BG)
 
@@ -4003,18 +4005,19 @@ def screen_memcard_picker(user):
                         create_card(user, name.strip())
                     _dirty = True; break
                 elif sel < len(cards):
-                    play_sfx('select'); fade_to_black(); return cards[sel]
+                    # A = enter/browse the card's saves
+                    play_sfx('select')
+                    screen_save_browser(user, cards[sel])
+                    _dirty = True; break
 
-            # View saves (Y button)
-            do_view = False
+            # Mount card (Y button)
+            do_mount = False
             if ev.type == pygame.KEYDOWN and ev.key == pygame.K_v:
-                do_view = True
+                do_mount = True
             if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["alt"]:
-                do_view = True
-            if do_view and sel < len(cards):
-                play_sfx('select')
-                screen_save_browser(user, cards[sel])
-                _dirty = True; break
+                do_mount = True
+            if do_mount and sel < len(cards):
+                play_sfx('select'); fade_to_black(); return cards[sel]
 
             # Delete card (X button)
             do_delete = False
@@ -4061,7 +4064,7 @@ def screen_memcard_picker(user):
         _draw_card_grid(items, sel, start_time,
                         f"{user}'s Cards",
                         f"{len(cards)} card{'s' if len(cards) != 1 else ''}",
-                        "[A] Select   [Y] View Saves   [X] Delete   [B] Back",
+                        "[A] Browse   [Y] Mount   [X] Delete   [B] Back",
                         cols=COLS)
         if _need_fade:
             fade_from_black(); _need_fade = False
@@ -4148,7 +4151,7 @@ def screen_save_browser(user, card):
     total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
 
     HEADER_H = scaled(42)
-    HINT_H = scaled(22)
+    HINT_H = scaled(32)
     GRID_PAD = scaled(10)  # Padding around grid area
     CELL_GAP = scaled(6)   # Gap between cells
 
@@ -4424,6 +4427,10 @@ def screen_save_browser(user, card):
                         if page > 0:
                             page -= 1; sel = page * PER_PAGE
                             sel = min(sel, total - 1); play_sfx('navigate')
+                    elif ev.button == BTN.get("shoulder_r", -1):
+                        if page < total_pages - 1:
+                            page += 1; sel = page * PER_PAGE
+                            sel = min(sel, total - 1); play_sfx('navigate')
 
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
@@ -4648,7 +4655,7 @@ def screen_save_browser(user, card):
         # Hint bar
         hint_parts = ["[A] Details", "[B] Back"]
         if total_pages > 1:
-            hint_parts.insert(1, "[L1] Prev Page")
+            hint_parts = ["[A] Details", "[L1] Prev", "[R1] Next", "[B] Back"]
         draw_hint_bar("   ".join(hint_parts))
 
         # Detail panel overlay (drawn on top of everything)
