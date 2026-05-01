@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.4'
+VERSION = '0.1.5'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime
@@ -607,24 +607,53 @@ def _mc_name(data, off, length=32):
 
 
 class _PS2Memcard:
-    """Low-level parser for a raw PS2 memory card image."""
+    """Low-level parser for a raw PS2 memory card image.
+
+    Handles both standard (8,388,608 bytes = 512-byte pages) and
+    ECC/raw format (8,650,752 bytes = 528-byte pages with 16-byte
+    spare data appended after every 512-byte page). RetroArch's
+    PCSX2 core uses the ECC format by default.
+
+    IFC and FAT clusters are addressed by ABSOLUTE cluster index
+    (they live in the reserved area before alloc_offset). Data
+    clusters (root dir, save dirs, files) are addressed RELATIVE
+    to alloc_offset.
+    """
 
     def __init__(self, data):
         self._data = data
         self._page_len = _mc_u16(data, _SB_PAGE_LEN) or 512
         self._ppc = _mc_u16(data, _SB_PPC) or 2
-        self._cluster_size = self._page_len * self._ppc
+        self._cluster_size = self._page_len * self._ppc  # logical (1024)
         self._alloc_offset = _mc_u32(data, _SB_ALLOC_OFF)
         self._rootdir_cluster = _mc_u32(data, _SB_ROOTDIR_CL)
         self._ifc_list = [_mc_u32(data, _SB_IFC_LIST + i*4) for i in range(32)]
         self._fat = {}
 
-    def _cluster_off(self, cl):
-        return (self._alloc_offset + cl) * self._cluster_size
+        # Detect ECC format: 16384 pages × 528 bytes = 8,650,752
+        ecc_page = self._page_len + 16
+        total_ecc = len(data) // ecc_page
+        if total_ecc * ecc_page == len(data) and len(data) != total_ecc * self._page_len:
+            self._phys_page = ecc_page   # 528 on disk per page
+        else:
+            self._phys_page = self._page_len  # 512
+
+    def _read_page(self, page_index):
+        """Read one logical page, stripping ECC spare bytes if present."""
+        off = page_index * self._phys_page
+        return self._data[off:off + self._page_len]
+
+    def _read_cl_abs(self, abs_cl):
+        """Read one cluster by ABSOLUTE cluster index (for IFC/FAT)."""
+        first_page = abs_cl * self._ppc
+        buf = bytearray()
+        for p in range(self._ppc):
+            buf.extend(self._read_page(first_page + p))
+        return bytes(buf)
 
     def _read_cl(self, cl):
-        off = self._cluster_off(cl)
-        return self._data[off:off + self._cluster_size]
+        """Read one data cluster RELATIVE to alloc_offset."""
+        return self._read_cl_abs(self._alloc_offset + cl)
 
     def _fat_val(self, cl):
         if cl in self._fat: return self._fat[cl]
@@ -633,10 +662,11 @@ class _PS2Memcard:
         if ifc_i >= 32: return 0xFFFFFFFF
         ifc_cl = self._ifc_list[ifc_i]
         if ifc_cl == 0xFFFFFFFF: return 0xFFFFFFFF
-        ifc_data = self._read_cl(ifc_cl)
+        ifc_data = self._read_cl_abs(ifc_cl)          # absolute
         fat_cl = _mc_u32(ifc_data, ((cl // epc) % epc) * 4)
         if fat_cl == 0xFFFFFFFF: return 0xFFFFFFFF
-        fat_data = self._read_cl(fat_cl)
+        fat_data = self._read_cl_abs(fat_cl)           # absolute
+        if len(fat_data) < 4: return 0xFFFFFFFF        # safety
         val = _mc_u32(fat_data, (cl % epc) * 4)
         self._fat[cl] = val
         return val
