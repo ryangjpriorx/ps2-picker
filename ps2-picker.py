@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.3'
+VERSION = '0.1.4'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime
@@ -548,6 +548,171 @@ def save_memcard(user, card):
         dst = os.path.join(card_dir, f)
         if os.path.exists(src):
             shutil.copy2(src, dst)
+
+
+# ═══ PS2 Memory Card Filesystem Parser ══════════════════════════
+# Pure-Python parser for .ps2 memory card images. Reads the FAT-based
+# filesystem to list game saves, extract display titles from icon.sys,
+# and report file sizes and modification dates.
+
+PS2MC_MAGIC = b"Sony PS2 Memory Card Format "
+ICON_SYS_MAGIC = b"PS2D"
+
+_SB_PAGE_LEN    = 0x28
+_SB_PPC         = 0x2A
+_SB_ALLOC_OFF   = 0x34
+_SB_ROOTDIR_CL  = 0x3C
+_SB_IFC_LIST    = 0x50
+
+_MODE_EXISTS = 0x8000
+_MODE_DIR    = 0x0020
+_MODE_FILE   = 0x0010
+
+DIRENT_SIZE = 512
+
+
+class PS2Save:
+    """One game save directory on the memory card."""
+    __slots__ = ('name', 'title', 'size', 'file_count', 'modified', 'files')
+    def __init__(self, name, title, size, file_count, modified, files):
+        self.name = name; self.title = title; self.size = size
+        self.file_count = file_count; self.modified = modified; self.files = files
+
+
+def _mc_u16(data, off):
+    return struct.unpack_from('<H', data, off)[0]
+
+def _mc_u32(data, off):
+    return struct.unpack_from('<I', data, off)[0]
+
+def _mc_tod(data, off):
+    """Parse a PS2 Time-of-Day timestamp (8 bytes) into datetime."""
+    try:
+        sec, minute, hour = data[off+1], data[off+2], data[off+3]
+        day, month = data[off+4], data[off+5]
+        year = _mc_u16(data, off+6)
+        if year < 1970 or month < 1 or month > 12 or day < 1 or day > 31:
+            return None
+        return datetime.datetime(year, month, day, hour, minute, sec)
+    except (ValueError, IndexError):
+        return None
+
+def _mc_name(data, off, length=32):
+    """Read a zero-terminated ASCII name from a directory entry."""
+    raw = data[off:off + length]
+    end = raw.find(b'\x00')
+    if end >= 0: raw = raw[:end]
+    try: return raw.decode('ascii', errors='replace')
+    except Exception: return ""
+
+
+class _PS2Memcard:
+    """Low-level parser for a raw PS2 memory card image."""
+
+    def __init__(self, data):
+        self._data = data
+        self._page_len = _mc_u16(data, _SB_PAGE_LEN) or 512
+        self._ppc = _mc_u16(data, _SB_PPC) or 2
+        self._cluster_size = self._page_len * self._ppc
+        self._alloc_offset = _mc_u32(data, _SB_ALLOC_OFF)
+        self._rootdir_cluster = _mc_u32(data, _SB_ROOTDIR_CL)
+        self._ifc_list = [_mc_u32(data, _SB_IFC_LIST + i*4) for i in range(32)]
+        self._fat = {}
+
+    def _cluster_off(self, cl):
+        return (self._alloc_offset + cl) * self._cluster_size
+
+    def _read_cl(self, cl):
+        off = self._cluster_off(cl)
+        return self._data[off:off + self._cluster_size]
+
+    def _fat_val(self, cl):
+        if cl in self._fat: return self._fat[cl]
+        epc = self._cluster_size // 4
+        ifc_i = cl // (epc * epc)
+        if ifc_i >= 32: return 0xFFFFFFFF
+        ifc_cl = self._ifc_list[ifc_i]
+        if ifc_cl == 0xFFFFFFFF: return 0xFFFFFFFF
+        ifc_data = self._read_cl(ifc_cl)
+        fat_cl = _mc_u32(ifc_data, ((cl // epc) % epc) * 4)
+        if fat_cl == 0xFFFFFFFF: return 0xFFFFFFFF
+        fat_data = self._read_cl(fat_cl)
+        val = _mc_u32(fat_data, (cl % epc) * 4)
+        self._fat[cl] = val
+        return val
+
+    def _chain(self, start, limit=4096):
+        chain, cur, seen = [], start, set()
+        while cur != 0xFFFFFFFF and len(chain) < limit:
+            if cur in seen: break
+            seen.add(cur); chain.append(cur)
+            cur = self._fat_val(cur) & 0x7FFFFFFF
+        return chain
+
+    def _chain_data(self, start, length=None):
+        buf = bytearray()
+        for cl in self._chain(start):
+            buf.extend(self._read_cl(cl))
+        return bytes(buf[:length]) if length else bytes(buf)
+
+    def _dirents(self, start, count):
+        raw = self._chain_data(start)
+        entries = []
+        for i in range(count):
+            o = i * DIRENT_SIZE
+            if o + DIRENT_SIZE > len(raw): break
+            entries.append({
+                'mode': _mc_u16(raw, o),
+                'length': _mc_u32(raw, o+4),
+                'created': _mc_tod(raw, o+8),
+                'cluster': _mc_u32(raw, o+0x10),
+                'modified': _mc_tod(raw, o+0x18),
+                'name': _mc_name(raw, o+0x40),
+            })
+        return entries
+
+    def _parse_icon_sys(self, data):
+        if len(data) < 0xC0 + 68 or data[:4] != ICON_SYS_MAGIC: return None
+        raw = data[0xC0:0xC0+68]
+        end = raw.find(b'\x00')
+        if end >= 0: raw = raw[:end]
+        try: return raw.decode('shift_jis', errors='replace').strip()
+        except Exception: return None
+
+    def list_saves(self):
+        root = self._dirents(self._rootdir_cluster, 512)
+        saves = []
+        for e in root:
+            if e['name'] in ('.', '..', ''): continue
+            if not (e['mode'] & _MODE_EXISTS) or not (e['mode'] & _MODE_DIR): continue
+            subs = self._dirents(e['cluster'], e['length'])
+            files, total, icon_data = [], 0, None
+            for s in subs:
+                if s['name'] in ('.', '..', ''): continue
+                if not (s['mode'] & _MODE_EXISTS) or not (s['mode'] & _MODE_FILE): continue
+                files.append((s['name'], s['length'], s['modified'] or s['created']))
+                total += s['length']
+                if s['name'].lower() == 'icon.sys' and icon_data is None:
+                    try: icon_data = self._chain_data(s['cluster'], min(s['length'], 2048))
+                    except Exception: pass
+            title = self._parse_icon_sys(icon_data) if icon_data else None
+            saves.append(PS2Save(e['name'], title or e['name'], total,
+                                 len(files), e['modified'] or e['created'], files))
+        return saves
+
+
+def parse_memcard(path):
+    """Parse a .ps2 memory card file. Returns list of PS2Save objects."""
+    if not os.path.isfile(path) or os.path.getsize(path) < 0x200:
+        return []
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+        if not data[:20].startswith(PS2MC_MAGIC[:20]):
+            return []
+        return _PS2Memcard(data).list_saves()
+    except Exception:
+        return []
 
 
 # ═══ ROM List & Archive Helpers ═════════════════════════════════════
@@ -3699,6 +3864,17 @@ def screen_memcard_picker(user):
                 elif sel < len(cards):
                     play_sfx('select'); fade_to_black(); return cards[sel]
 
+            # View saves (Y button)
+            do_view = False
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_v:
+                do_view = True
+            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["alt"]:
+                do_view = True
+            if do_view and sel < len(cards):
+                play_sfx('select')
+                screen_save_browser(user, cards[sel])
+                _dirty = True; break
+
             # Delete card (X button)
             do_delete = False
             if ev.type == pygame.KEYDOWN and (ev.key == pygame.K_DELETE or ev.key == pygame.K_x):
@@ -3744,8 +3920,312 @@ def screen_memcard_picker(user):
         _draw_card_grid(items, sel, start_time,
                         f"{user}'s Cards",
                         f"{len(cards)} card{'s' if len(cards) != 1 else ''}",
-                        "[A] Select   [X] Delete   [B] Back",
+                        "[A] Select   [Y] View Saves   [X] Delete   [B] Back",
                         cols=COLS)
+        if _need_fade:
+            fade_from_black(); _need_fade = False
+        clock.tick(60)
+
+
+# ═══ Screen: Memory Card Save Browser (PS2-style) ════════════
+
+def _icon_save_slot(surf, cx, cy, r, t, selected):
+    """Procedural PS2 save slot icon — disc with sparkle."""
+    pulse = 1.0 + 0.05 * math.sin(t * 2.5) if selected else 1.0
+    pr = int(r * pulse)
+    color = HDR if selected else ACCENT
+    pygame.draw.circle(surf, color, (cx, cy), pr, 2)
+    pygame.draw.circle(surf, color, (cx, cy), int(pr * 0.5), 1)
+    pygame.draw.circle(surf, color, (cx, cy), max(2, int(pr * 0.15)))
+    if selected:
+        for i in range(3):
+            a = t * 1.8 + i * (2 * math.pi / 3)
+            sx = cx + int(pr * 0.7 * math.cos(a))
+            sy = cy + int(pr * 0.7 * math.sin(a))
+            sz = max(1, int(pr * 0.08 * (1 + 0.5 * math.sin(t * 4 + i))))
+            pygame.draw.circle(surf, HDR, (sx, sy), sz)
+
+
+def _icon_file_item(surf, cx, cy, r, t, selected):
+    """Small file icon — page with folded corner."""
+    pr = int(r * 0.7)
+    color = HDR if selected else TXT_DIM
+    pw, ph = int(pr * 0.9), int(pr * 1.2)
+    rect = pygame.Rect(cx - pw // 2, cy - ph // 2, pw, ph)
+    pygame.draw.rect(surf, color, rect, 1)
+    fold = int(pr * 0.3)
+    fx, fy = rect.right - fold, rect.top
+    pygame.draw.line(surf, color, (fx, fy), (fx, fy + fold), 1)
+    pygame.draw.line(surf, color, (fx, fy + fold), (rect.right, fy + fold), 1)
+    for i in range(2):
+        ly = rect.top + int(ph * (0.45 + i * 0.22))
+        lx1 = rect.left + int(pw * 0.15)
+        lx2 = rect.right - int(pw * 0.15)
+        pygame.draw.line(surf, color, (lx1, ly), (lx2, ly), 1)
+
+
+def _format_size(size_bytes):
+    """Format byte count as human-readable string."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def screen_save_browser(user, card):
+    """PS2-style memory card save browser.
+
+    Shows all saves on both Mcd001.ps2 and Mcd002.ps2 in the card directory.
+    Visual style inspired by the PS2 browser with our theme colors.
+    """
+    _need_fade = True
+    start_time = time.time()
+    sel = 0
+    scroll_y = 0.0
+    target_scroll = 0.0
+    expanded = set()
+    last_joy = 0
+
+    # Parse both memory card slots
+    card_dir = os.path.join(USERS_DIR, user, "cards", card)
+    all_saves = []
+    slot_labels = []
+    for mc_file in MEMCARD_FILES:
+        mc_path = os.path.join(card_dir, mc_file)
+        saves = parse_memcard(mc_path)
+        slot_name = "Slot 1" if "001" in mc_file else "Slot 2"
+        for s in saves:
+            all_saves.append(s)
+            slot_labels.append(slot_name)
+
+    HEADER_H = scaled(42)
+    HINT_H = scaled(22)
+    ROW_H = scaled(52)
+    FILE_ROW_H = scaled(20)
+    ICON_R = scaled(14)
+    LEFT_PAD = scaled(14)
+    SCROLL_SPEED = 8.0
+
+    def _total_height():
+        h = 0
+        for i, s in enumerate(all_saves):
+            h += ROW_H
+            if i in expanded:
+                h += len(s.files) * FILE_ROW_H + scaled(6)
+        return h
+
+    def _row_y(index):
+        y = 0
+        for i in range(index):
+            y += ROW_H
+            if i in expanded:
+                y += len(all_saves[i].files) * FILE_ROW_H + scaled(6)
+        return y
+
+    while True:
+        now = time.time()
+        t = now - start_time
+        dt = clock.get_time() / 1000.0
+
+        total = len(all_saves)
+        if total == 0:
+            screen.fill(BG)
+            title_surf = F['lg'].render(f"{card}", True, HDR)
+            screen.blit(title_surf, (scaled(12), scaled(10)))
+            sub = F['sm'].render("Memory Card Browser", True, TXT_DIM)
+            screen.blit(sub, (W - sub.get_width() - scaled(12), scaled(16)))
+            pygame.draw.line(screen, _blend(BG, ACCENT, 0.3),
+                             (scaled(12), HEADER_H), (W - scaled(12), HEADER_H), 1)
+            msg = F['md'].render("No saves found on this card", True, TXT_DIM)
+            screen.blit(msg, msg.get_rect(center=(W // 2, H // 2 - scaled(10))))
+            hint = F['sm'].render("Card may be empty or unformatted", True, TXT_DIM)
+            screen.blit(hint, hint.get_rect(center=(W // 2, H // 2 + scaled(14))))
+            draw_hint_bar("[B] Back")
+            pygame.display.flip()
+            if _need_fade:
+                fade_from_black(); _need_fade = False
+            for ev in pygame.event.get():
+                if ev.type == pygame.QUIT:
+                    pygame.quit(); sys.exit()
+                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); fade_to_black(); return
+                if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
+                    play_sfx('back'); fade_to_black(); return
+            clock.tick(30)
+            continue
+
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); fade_to_black(); return
+                elif ev.key == pygame.K_UP:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                elif ev.key == pygame.K_DOWN:
+                    sel = min(total - 1, sel + 1); play_sfx('navigate')
+                elif ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    play_sfx('select')
+                    if sel in expanded:
+                        expanded.discard(sel)
+                    else:
+                        expanded.add(sel)
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == BTN["back"]:
+                    play_sfx('back'); fade_to_black(); return
+                elif ev.button == BTN["confirm"]:
+                    play_sfx('select')
+                    if sel in expanded:
+                        expanded.discard(sel)
+                    else:
+                        expanded.add(sel)
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hy == 1:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                elif hy == -1:
+                    sel = min(total - 1, sel + 1); play_sfx('navigate')
+
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            moved = False
+            try:
+                ay = joy.get_axis(1)
+                if ay < -0.5:
+                    sel = max(0, sel - 1); moved = True
+                elif ay > 0.5:
+                    sel = min(total - 1, sel + 1); moved = True
+            except Exception:
+                pass
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        # Scroll tracking
+        view_h = H - HEADER_H - HINT_H
+        sel_y = _row_y(sel)
+        if sel_y < target_scroll:
+            target_scroll = sel_y
+        if sel_y + ROW_H > target_scroll + view_h:
+            target_scroll = sel_y + ROW_H - view_h
+        target_scroll = max(0, min(target_scroll, max(0, _total_height() - view_h)))
+        scroll_y += (target_scroll - scroll_y) * min(1.0, dt * SCROLL_SPEED)
+
+        # Draw
+        screen.fill(BG)
+
+        # Header
+        title_surf = F['lg'].render(f"{card}", True, HDR)
+        screen.blit(title_surf, (scaled(12), scaled(10)))
+        sub_str = f"{total} save{'s' if total != 1 else ''}  \u2022  Memory Card Browser"
+        sub = F['sm'].render(sub_str, True, TXT_DIM)
+        screen.blit(sub, (W - sub.get_width() - scaled(12), scaled(16)))
+        pygame.draw.line(screen, _blend(BG, ACCENT, 0.5),
+                         (scaled(8), HEADER_H - 1), (W - scaled(8), HEADER_H - 1), 1)
+        pygame.draw.line(screen, _blend(BG, ACCENT, 0.25),
+                         (scaled(8), HEADER_H + 1), (W - scaled(8), HEADER_H + 1), 1)
+
+        content_rect = pygame.Rect(0, HEADER_H + 2, W, view_h)
+        screen.set_clip(content_rect)
+
+        text_x_base = LEFT_PAD + ICON_R * 2 + scaled(16)
+        draw_y = HEADER_H + 2 - int(scroll_y)
+        for i, save in enumerate(all_saves):
+            is_sel = (i == sel)
+            is_exp = (i in expanded)
+            ry = draw_y
+
+            if ry + ROW_H > HEADER_H and ry < H - HINT_H:
+                row_rect = pygame.Rect(scaled(6), ry + 1, W - scaled(12), ROW_H - 2)
+
+                if is_sel:
+                    glow_alpha = int(80 + 40 * math.sin(t * 3))
+                    glow_color = _blend(BG, ACCENT, glow_alpha / 255)
+                    pygame.draw.rect(screen, glow_color, row_rect.inflate(scaled(4), scaled(2)),
+                                     border_radius=scaled(4))
+                    pygame.draw.rect(screen, SEL_BG, row_rect, border_radius=scaled(4))
+                    bar_h = int(ROW_H * (0.5 + 0.15 * math.sin(t * 4)))
+                    bar_rect = pygame.Rect(row_rect.x, ry + (ROW_H - bar_h) // 2,
+                                           scaled(3), bar_h)
+                    pygame.draw.rect(screen, ACCENT, bar_rect, border_radius=scaled(1))
+                else:
+                    if i % 2 == 0:
+                        pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.3), row_rect,
+                                         border_radius=scaled(3))
+
+                sep_y = ry + ROW_H - 1
+                pygame.draw.line(screen, _blend(BG, ACCENT, 0.15),
+                                 (scaled(14), sep_y), (W - scaled(14), sep_y), 1)
+
+                icon_cx = LEFT_PAD + ICON_R + scaled(4)
+                icon_cy = ry + ROW_H // 2
+                _icon_save_slot(screen, icon_cx, icon_cy, ICON_R, t, is_sel)
+
+                text_x = text_x_base
+                max_text_w = W - text_x - scaled(60)
+
+                title_color = HDR if is_sel else TXT
+                title_font = F['md_b'] if is_sel else F['md']
+                title_text = truncate(save.title, title_font, max_text_w)
+                ts = title_font.render(title_text, True, title_color)
+                screen.blit(ts, (text_x, ry + scaled(6)))
+
+                date_str = save.modified.strftime('%Y-%m-%d') if save.modified else '???'
+                sub_text = f"{save.name}  \u2022  {slot_labels[i]}  \u2022  {date_str}"
+                sub_color = ACCENT if is_sel else TXT_DIM
+                ss = F['sm'].render(truncate(sub_text, F['sm'], max_text_w), True, sub_color)
+                screen.blit(ss, (text_x, ry + scaled(28)))
+
+                size_str = _format_size(save.size)
+                size_surf = F['sm'].render(size_str, True, TXT_DIM)
+                screen.blit(size_surf, (W - size_surf.get_width() - scaled(16),
+                                        ry + ROW_H // 2 - size_surf.get_height() // 2))
+
+                if is_sel:
+                    arrow = "\u25bc" if is_exp else "\u25b6"
+                    arrow_surf = F['sm'].render(arrow, True, ACCENT)
+                    screen.blit(arrow_surf, (W - scaled(50) - size_surf.get_width(),
+                                             ry + ROW_H // 2 - arrow_surf.get_height() // 2))
+
+            draw_y += ROW_H
+
+            if is_exp and save.files:
+                for fi, (fname, fsize, fmod) in enumerate(save.files):
+                    fy = draw_y
+                    if fy + FILE_ROW_H > HEADER_H and fy < H - HINT_H:
+                        file_icon_x = LEFT_PAD + scaled(28)
+                        _icon_file_item(screen, file_icon_x, fy + FILE_ROW_H // 2,
+                                        scaled(7), t, False)
+                        fn_surf = F['sm'].render(
+                            truncate(fname, F['sm'], W - text_x_base - scaled(80)),
+                            True, TXT_DIM)
+                        screen.blit(fn_surf, (text_x_base + scaled(8), fy + scaled(2)))
+                        fs_surf = F['sm'].render(_format_size(fsize), True,
+                                                 _blend(TXT_DIM, BG, 0.3))
+                        screen.blit(fs_surf, (W - fs_surf.get_width() - scaled(16),
+                                              fy + scaled(2)))
+                    draw_y += FILE_ROW_H
+                draw_y += scaled(6)
+
+        screen.set_clip(None)
+
+        if _total_height() > view_h:
+            track_x = W - scaled(4)
+            track_top = HEADER_H + 2
+            track_h = view_h
+            thumb_h = max(scaled(20), int(track_h * view_h / _total_height()))
+            thumb_y = track_top + int((track_h - thumb_h) * scroll_y /
+                                      max(1, _total_height() - view_h))
+            pygame.draw.rect(screen, _blend(BG, ACCENT, 0.15),
+                             (track_x, track_top, scaled(3), track_h),
+                             border_radius=scaled(1))
+            pygame.draw.rect(screen, _blend(BG, ACCENT, 0.5),
+                             (track_x, thumb_y, scaled(3), thumb_h),
+                             border_radius=scaled(1))
+
+        draw_hint_bar("[A] Expand/Collapse   [B] Back")
+
+        pygame.display.flip()
         if _need_fade:
             fade_from_black(); _need_fade = False
         clock.tick(60)
