@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.8'
+VERSION = '0.1.9'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -833,7 +833,10 @@ class _PS2Memcard:
                     except Exception:
                         pass
 
-            saves.append(PS2Save(e['name'], title or e['name'], total,
+            # Only show entries with a readable title from icon.sys
+            if not title:
+                continue
+            saves.append(PS2Save(e['name'], title, total,
                                  len(files), e['modified'] or e['created'],
                                  files, icon_pixels))
         return saves
