@@ -9,6 +9,8 @@
      python3 ps2-checker.py --terminal    Force terminal mode (no GUI)
 """
 
+VERSION = '0.0.5'
+
 import os, sys, platform, shutil, subprocess, importlib.util, json, string, time, math
 
 # ═══ Platform Detection ═════════════════════════════════════════
@@ -17,8 +19,10 @@ IS_WINDOWS = platform.system() == 'Windows'
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MAIN_APP = os.path.join(SCRIPT_DIR, 'ps2-picker.py')
 APP_DIR = os.path.join(os.path.expanduser('~'), '.ps2-picker')
+GLOBAL_CONFIG_PATH = os.path.join(APP_DIR, 'config.json')
 CHECKER_CONFIG = os.path.join(APP_DIR, 'checker.json')
 HAS_PYGAME = importlib.util.find_spec('pygame') is not None
+DEFAULT_UPDATE_CHANNEL = 'main'  # Valid channels: 'main', 'testing'
 
 # ═══ Theme (matches main app) ══════════════════════════════════
 
@@ -76,6 +80,215 @@ def _load_theme():
 _load_theme()
 
 REF_W, REF_H = 640, 480
+
+
+# ═══ Update Channel Config ══════════════════════════════════════
+
+def get_update_channel():
+    """Determine update channel.  Priority order:
+    1. Current git branch (if it's 'main' or 'testing')
+    2. 'update_channel' in global config
+    3. DEFAULT_UPDATE_CHANNEL ('main')
+
+    Using the git branch first lets two separate clones (one on main,
+    one on testing) share the same global config without conflicting.
+    """
+    # 1. Auto-detect from current git branch
+    branch = _get_current_branch()
+    if branch in ('main', 'testing'):
+        return branch
+    # 2. Fall back to config
+    if os.path.exists(GLOBAL_CONFIG_PATH):
+        try:
+            with open(GLOBAL_CONFIG_PATH) as f:
+                cfg = json.load(f)
+            channel = cfg.get('update_channel', DEFAULT_UPDATE_CHANNEL)
+            if channel in ('main', 'testing'):
+                return channel
+        except Exception:
+            pass
+    return DEFAULT_UPDATE_CHANNEL
+
+
+def set_update_channel(channel):
+    """Write update_channel to global config."""
+    cfg = {}
+    if os.path.exists(GLOBAL_CONFIG_PATH):
+        try:
+            with open(GLOBAL_CONFIG_PATH) as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+    cfg['update_channel'] = channel
+    os.makedirs(APP_DIR, exist_ok=True)
+    with open(GLOBAL_CONFIG_PATH, 'w') as f:
+        json.dump(cfg, f, indent=2)
+
+
+# ═══ Self-Updater ═══════════════════════════════════════════════
+
+def _is_git_repo():
+    """Check if SCRIPT_DIR is inside a git repository."""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--is-inside-work-tree'],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=10
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _has_git():
+    """Check if git is available on PATH."""
+    return shutil.which('git') is not None
+
+
+def _get_current_branch():
+    """Return the name of the currently checked-out git branch."""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=10
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def _parse_version(v):
+    """Parse a version string like '0.1.0' into a comparable tuple (0, 1, 0)."""
+    try:
+        return tuple(int(x) for x in v.strip().split('.'))
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+
+def _get_remote_version(channel):
+    """Read the VERSION string from the remote branch's ps2-checker.py.
+
+    Uses 'git show origin/<channel>:ps2-checker.py' to read the file
+    without checking it out, then extracts the VERSION = '...' line.
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'show', f'origin/{channel}:ps2-checker.py'],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines()[:10]:  # VERSION is near the top
+            line = line.strip()
+            if line.startswith('VERSION'):
+                # Parse: VERSION = '0.1.0' or VERSION = "0.1.0"
+                parts = line.split('=', 1)
+                if len(parts) == 2:
+                    return parts[1].strip().strip("\"'")
+    except Exception:
+        pass
+    return None
+
+
+def check_for_updates():
+    """Check if a newer version is available on the configured channel.
+
+    Compares the local VERSION constant against the remote branch's VERSION
+    using semantic version comparison (tuple of ints).
+
+    Returns:
+        dict with keys:
+            'available'     (bool) - True if remote version is newer
+            'channel'       (str)  - The update channel checked
+            'local_version' (str)  - Local version string
+            'remote_version'(str)  - Remote version string (or None)
+            'error'         (str)  - Error message if check failed, else None
+    """
+    if not _has_git():
+        return {'available': False, 'channel': None, 'local_version': VERSION,
+                'remote_version': None, 'error': 'git is not installed'}
+    if not _is_git_repo():
+        return {'available': False, 'channel': None, 'local_version': VERSION,
+                'remote_version': None, 'error': 'Not a git repository'}
+
+    channel = get_update_channel()
+
+    # Fetch latest refs from remote
+    try:
+        result = subprocess.run(
+            ['git', 'fetch', 'origin', channel],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            return {'available': False, 'channel': channel, 'local_version': VERSION,
+                    'remote_version': None, 'error': f'Fetch failed: {result.stderr.strip()}'}
+    except subprocess.TimeoutExpired:
+        return {'available': False, 'channel': channel, 'local_version': VERSION,
+                'remote_version': None, 'error': 'Fetch timed out (no network?)'}
+    except Exception as e:
+        return {'available': False, 'channel': channel, 'local_version': VERSION,
+                'remote_version': None, 'error': str(e)}
+
+    remote_ver = _get_remote_version(channel)
+    if not remote_ver:
+        return {'available': False, 'channel': channel, 'local_version': VERSION,
+                'remote_version': None, 'error': 'Could not read remote version'}
+
+    local_tuple = _parse_version(VERSION)
+    remote_tuple = _parse_version(remote_ver)
+    current_branch = _get_current_branch()
+    needs_switch = (current_branch != channel)
+
+    return {
+        'available': remote_tuple > local_tuple or needs_switch,
+        'channel': channel,
+        'local_version': VERSION,
+        'remote_version': remote_ver,
+        'needs_switch': needs_switch,
+        'current_branch': current_branch,
+        'error': None,
+    }
+
+
+def perform_update():
+    """Pull the latest code from the configured update channel.
+
+    Switches branch if needed, then pulls. Reports old → new version.
+
+    Returns:
+        (success: bool, message: str)
+    """
+    channel = get_update_channel()
+    current_branch = _get_current_branch()
+    old_version = VERSION
+
+    # Switch branch if needed
+    if current_branch != channel:
+        try:
+            result = subprocess.run(
+                ['git', 'checkout', channel],
+                cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=15
+            )
+            if result.returncode != 0:
+                return False, f'Branch switch failed: {result.stderr.strip()}'
+        except Exception as e:
+            return False, f'Branch switch error: {e}'
+
+    # Pull latest
+    try:
+        result = subprocess.run(
+            ['git', 'pull', 'origin', channel],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=60
+        )
+        if result.returncode != 0:
+            return False, f'Pull failed: {result.stderr.strip()}'
+    except subprocess.TimeoutExpired:
+        return False, 'Pull timed out'
+    except Exception as e:
+        return False, f'Pull error: {e}'
+
+    # Read the new version from the freshly pulled file
+    new_version = _get_remote_version(channel) or '???'
+    return True, f'Updated {old_version} \u2192 {new_version} ({channel})'
 
 
 # ═══ Checker Config Persistence ═════════════════════════════════
@@ -438,6 +651,46 @@ def run_terminal_mode(check_only=False):
     print(f"  {_cyan('OS Detected:')}  {pretty}")
     print(f"  {_cyan('Distro Family:')}  {distro}")
     print(f"  {_cyan('Python:')}  {platform.python_version()}")
+
+    # ─── Update check ───────────────────────────────────
+    channel = get_update_channel()
+    print(f"  {_cyan('Version:')}  {VERSION}")
+    print(f"  {_cyan('Update Channel:')}  {channel}")
+    if _has_git() and _is_git_repo():
+        print(f"  {_dim('Checking for updates...')}")
+        update_info = check_for_updates()
+        if update_info['error']:
+            print(f"  {_yellow('!')}  Update check: {update_info['error']}")
+        elif update_info['available']:
+            local_v = update_info.get('local_version', VERSION)
+            remote_v = update_info.get('remote_version', '?')
+            switch = update_info.get('needs_switch', False)
+            parts = [f"{local_v} \u2192 {remote_v}"]
+            if switch:
+                parts.append(f"branch: {update_info.get('current_branch', '?')} \u2192 {channel}")
+            print(f"  {_yellow('!')}  {_bold('Update available:')} {', '.join(parts)}")
+            print()
+            try:
+                ans = input(f"  {_cyan('?')}  Update now? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                ans = ''
+            if ans in ('y', 'yes'):
+                print(f"  {_dim('Updating...')}")
+                ok, msg = perform_update()
+                if ok:
+                    print(f"  {_green('OK')}  {msg}")
+                    print(f"  {_cyan('->')}  Restarting checker...")
+                    print()
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                else:
+                    print(f"  {_red('X')}  {msg}")
+        else:
+            print(f"  {_green('OK')}  Up to date (v{VERSION})")
+    else:
+        if not _has_git():
+            print(f"  {_dim('Update check skipped: git not installed')}")
+        else:
+            print(f"  {_dim('Update check skipped: not a git repo')}")
     print()
     print(_bold("-" * 60))
 
@@ -593,6 +846,26 @@ def run_gui_mode(check_only=False):
     # Check main app exists
     main_app_exists = os.path.exists(MAIN_APP)
 
+    # ─── Update check state ─────────────────────────────────
+    update_info = None       # Result from check_for_updates()
+    update_status = 'idle'   # idle -> checking -> result -> updating -> done/failed
+    update_msg = ''
+    channel = get_update_channel()
+
+    # Kick off update check in background-ish (blocking but fast after fetch)
+    if _has_git() and _is_git_repo():
+        update_status = 'checking'
+        # Draw a quick "checking" frame before blocking on fetch
+        scr.fill(BG)
+        checking_surf = fonts['lg'].render('Checking for updates...', True, HINT)
+        scr.blit(checking_surf, checking_surf.get_rect(center=(w // 2, h // 2)))
+        ver_surf = fonts['sm'].render(f'v{VERSION} ({channel})', True, TXT_DIM)
+        scr.blit(ver_surf, ver_surf.get_rect(center=(w // 2, h // 2 + sc(24))))
+        pygame.display.flip()
+
+        update_info = check_for_updates()
+        update_status = 'result'
+
     def refresh_status():
         nonlocal missing, req_missing, all_ok, promptable_missing
         missing = [d for d in deps if not d['installed']]
@@ -693,6 +966,22 @@ def run_gui_mode(check_only=False):
                             path_input_target = d['name']
                             path_input_text = ""
                             path_input_error = ""
+                    elif ev.key == pygame.K_u:
+                        # U key = trigger update
+                        if update_info and update_info.get('available') and update_status == 'result':
+                            update_status = 'updating'
+                            scr.fill(BG)
+                            upd_surf = fonts['lg'].render('Updating...', True, HINT)
+                            scr.blit(upd_surf, upd_surf.get_rect(center=(w // 2, h // 2)))
+                            pygame.display.flip()
+                            ok, msg = perform_update()
+                            update_msg = msg
+                            if ok:
+                                update_status = 'done'
+                                pygame.quit()
+                                os.execv(sys.executable, [sys.executable] + sys.argv)
+                            else:
+                                update_status = 'failed'
                     elif ev.key == pygame.K_ESCAPE:
                         pygame.quit(); sys.exit(0)
                     elif ev.key == pygame.K_UP:
@@ -714,13 +1003,28 @@ def run_gui_mode(check_only=False):
                             path_input_error = ""
                     elif ev.button == 1:  # B
                         pygame.quit(); sys.exit(0)
+                    elif ev.button == 3:  # Y = trigger update
+                        if update_info and update_info.get('available') and update_status == 'result':
+                            update_status = 'updating'
+                            scr.fill(BG)
+                            upd_surf = fonts['lg'].render('Updating...', True, HINT)
+                            scr.blit(upd_surf, upd_surf.get_rect(center=(w // 2, h // 2)))
+                            pygame.display.flip()
+                            ok, msg = perform_update()
+                            update_msg = msg
+                            if ok:
+                                update_status = 'done'
+                                pygame.quit()
+                                os.execv(sys.executable, [sys.executable] + sys.argv)
+                            else:
+                                update_status = 'failed'
 
         # ─── Draw ───────────────────────────────────────────
 
         scr.fill(BG)
 
         # Title
-        title_surf = fonts['xl'].render("PS2 Picker - Dependency Check", True, HDR)
+        title_surf = fonts['xl'].render(f"PS2 Picker v{VERSION}", True, HDR)
         scr.blit(title_surf, title_surf.get_rect(center=(w // 2, sc(22))))
 
         # OS info
@@ -788,6 +1092,28 @@ def run_gui_mode(check_only=False):
         else:
             summary = fonts['lg'].render(f"\u2717  {len(missing)} of {len(deps)} missing", True, DANGER)
             scr.blit(summary, summary.get_rect(center=(w // 2, y + sc(6))))
+        y += sc(22)
+
+        # Update status display
+        if update_info and update_info.get('error'):
+            upd_s = fonts['sm'].render(f"Update check: {update_info['error']}", True, TXT_DIM)
+            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+        elif update_status == 'result' and update_info:
+            if update_info['available']:
+                local_v = update_info.get('local_version', VERSION)
+                remote_v = update_info.get('remote_version', '?')
+                upd_label = f"\u2B06 Update available: v{local_v} \u2192 v{remote_v} ({channel})"
+                upd_s = fonts['sm'].render(upd_label, True, HDR)
+                scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+            else:
+                upd_s = fonts['sm'].render(f"\u2713  Up to date (v{VERSION} on {channel})", True, SUCCESS)
+                scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+        elif update_status == 'done':
+            upd_s = fonts['sm'].render(f"\u2713  {update_msg}", True, SUCCESS)
+            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+        elif update_status == 'failed':
+            upd_s = fonts['sm'].render(f"\u2717  {update_msg}", True, DANGER)
+            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
 
         # Path input overlay
         if path_input_mode:
@@ -841,17 +1167,22 @@ def run_gui_mode(check_only=False):
             pygame.draw.rect(scr, BAR_BG, (0, h - bar_h, w, bar_h))
             pygame.draw.line(scr, ACCENT, (0, h - bar_h), (w, h - bar_h), 1)
 
+            # Build update hint suffix
+            upd_hint = ""
+            if update_info and update_info.get('available') and update_status == 'result':
+                upd_hint = "  |  [Y] Update"
+
             if not main_app_exists:
                 hint_text = "ps2-picker.py not found in this folder  |  [Esc] Exit"
             elif all_ok:
                 if check_only:
-                    hint_text = "All OK!  |  [Esc] Exit  (--check-only mode)"
+                    hint_text = "All OK!  |  [Esc] Exit  (--check-only mode)" + upd_hint
                 else:
-                    hint_text = "[A] Launch PS2 Picker    [B] Exit"
+                    hint_text = "[A] Launch PS2 Picker  |  [B] Exit" + upd_hint
             elif promptable_missing:
-                hint_text = "[A] Locate missing  |  [B] Exit"
+                hint_text = "[A] Locate missing  |  [B] Exit" + upd_hint
             else:
-                hint_text = "Install missing dependencies and try again  |  [B] Exit"
+                hint_text = "Install missing deps and try again  |  [B] Exit" + upd_hint
 
             # Pulsing hint
             pulse = 0.5 + 0.5 * abs(math.sin(elapsed * 2.0))
