@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.30'
+VERSION = '0.1.31'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -1315,92 +1315,23 @@ def confirm_dialog(message):
                 last_joy = now
 
         screen.fill(BG)
-        # Render message lines (supports \n for multi-line)
-        lines = message.split('\n')
-        line_h = F['lg'].get_linesize() + scaled(4)
-        total_text_h = len(lines) * line_h
-        text_top = H // 3 - total_text_h // 2
-        for li, line in enumerate(lines):
-            line_font = F['lg'] if li == 0 else F['md']
-            line_color = HDR if li == 0 else TXT_DIM
-            display_line = truncate(line.strip(), line_font, W - scaled(40))
-            ls = line_font.render(display_line, True, line_color)
-            screen.blit(ls, ls.get_rect(center=(W // 2, text_top + li * line_h)))
-        for i, label in enumerate(["Yes", "No"]):
-            bx = W // 2 + (i * scaled(120) - scaled(60))
-            rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
-            if i == sel:
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
-                pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=scaled(6))
-            else:
-                pygame.draw.rect(screen, KEY_BG, rect, border_radius=scaled(6))
-            color = TXT_SEL if i == sel else TXT
-            ls = F['md_b'].render(label, True, color)
-            screen.blit(ls, ls.get_rect(center=rect.center))
-        draw_hint_bar("[A] Select   [B] Cancel")
-        pygame.display.flip()
-        clock.tick(30)
-
-
-def choice_dialog(message, options):
-    """Multi-choice dialog. Returns the selected option string, or None if cancelled."""
-    sel = 0
-    last_joy = 0
-    n = len(options)
-
-    while True:
-        now = time.time()
-        for ev in pygame.event.get():
-            if ev.type == pygame.QUIT:
-                pygame.quit(); sys.exit()
-            if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); return None
-                if ev.key == pygame.K_LEFT:
-                    sel = (sel - 1) % n; play_sfx('navigate')
-                if ev.key == pygame.K_RIGHT:
-                    sel = (sel + 1) % n; play_sfx('navigate')
-                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    play_sfx('select'); return options[sel]
-            if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == BTN["back"]:
-                    play_sfx('back'); return None
-                if ev.button == BTN["confirm"]:
-                    play_sfx('select'); return options[sel]
-            if ev.type == pygame.JOYHATMOTION:
-                hx, hy = ev.value
-                if hx < 0:
-                    sel = (sel - 1) % n; play_sfx('navigate')
-                if hx > 0:
-                    sel = (sel + 1) % n; play_sfx('navigate')
-        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
-            xa = joy.get_axis(0)
-            if xa < -0.5:
-                sel = (sel - 1) % n; play_sfx('navigate')
-                last_joy = now
-            elif xa > 0.5:
-                sel = (sel + 1) % n; play_sfx('navigate')
-                last_joy = now
-
-        screen.fill(BG)
-        # Multi-line message rendering
+        # Multi-line message rendering (split on \n)
         lines = message.split('\n')
         line_y = H // 3
         for li, line_text in enumerate(lines):
-            lfont = F['lg'] if li == 0 else F['md']
-            lcolor = HDR if li == 0 else TXT_DIM
-            display_line = truncate(line_text.strip(), lfont, W - scaled(40))
-            ls = lfont.render(display_line, True, lcolor)
+            if li == 0:
+                font = F['lg']
+                color = HDR
+            else:
+                font = F['md']
+                color = TXT_DIM
+            display_line = truncate(line_text, font, W - scaled(40))
+            ls = font.render(display_line, True, color)
             screen.blit(ls, ls.get_rect(center=(W // 2, line_y)))
             line_y += ls.get_height() + scaled(6)
-
-        # Draw option buttons
-        total_w = n * scaled(120)
-        start_x = (W - total_w) // 2 + scaled(60)
-        btn_y = H // 2 + scaled(10)
-        for i, label in enumerate(options):
-            bx = start_x + i * scaled(120)
-            rect = pygame.Rect(bx - scaled(55), btn_y, scaled(110), scaled(32))
+        for i, label in enumerate(["Yes", "No"]):
+            bx = W // 2 + (i * scaled(120) - scaled(60))
+            rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
             if i == sel:
                 pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
                 pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=scaled(6))
@@ -2262,7 +2193,7 @@ def settings_menu(username=None):
                 ch_color = (220, 160, 50) if ch_val == 1 else SUCCESS
                 ch_surf = F['sm'].render(ch_label, True, ch_color if is_sel else TXT_DIM)
                 screen.blit(ch_surf, (rect.right - ch_surf.get_width() - scaled(12),
-                                      rect.y + ROW_H_S // 2 - ch_surf.get_height() // 2))
+                                      rect.y + scaled(38) // 2 - ch_surf.get_height() // 2))
             elif key in ("theme", "controller_map", "cache_manager"):
                 # Show a chevron to indicate submenu
                 if key == "cache_manager":
@@ -3441,11 +3372,9 @@ def extract_and_launch(game_file, user, card):
                 if found:
                     manifest[game_key]["last_used"] = time.time()
                     save_cache_manifest(manifest)
-                    if card:
-                        load_memcard(user, card)
+                    load_memcard(user, card)
                     _launch_retroarch(found[0], core)
-                    if card:
-                        save_memcard(user, card)
+                    save_memcard(user, card)
                     return True
         del manifest[game_key]
         save_cache_manifest(manifest)
@@ -3461,24 +3390,40 @@ def extract_and_launch(game_file, user, card):
 
     if lower.endswith(('.zip', '.7z')):
         archive_size = get_archive_size(full_path)
+        draw_progress(game_file, 0, "Extracting")
 
         if lower.endswith('.zip'):
-            # Use Python zipfile for cross-platform extraction
+            # Chunked zip extraction — smooth progress even with 1 large file
             try:
+                CHUNK = 1 << 18  # 256 KB chunks
                 with zipfile.ZipFile(full_path, 'r') as zf:
-                    members = zf.infolist()
-                    total = len(members)
-                    for idx, member in enumerate(members):
-                        zf.extract(member, dest)
-                        now = time.time()
-                        pct = (idx + 1) / total if total > 0 else 0
-                        draw_progress(game_file, min(pct, 0.99), "Extracting")
-                        for ev in pygame.event.get():
-                            if ev.type == pygame.QUIT:
-                                pygame.quit(); sys.exit()
-                            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
-                                shutil.rmtree(dest, ignore_errors=True)
-                                return False
+                    total_size = sum(m.file_size for m in zf.infolist()) or 1
+                    written = 0
+                    last_draw = 0
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            os.makedirs(os.path.join(dest, member.filename), exist_ok=True)
+                            continue
+                        out_path = os.path.join(dest, member.filename)
+                        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                        with zf.open(member) as src, open(out_path, 'wb') as dst:
+                            while True:
+                                chunk = src.read(CHUNK)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                                written += len(chunk)
+                                now = time.time()
+                                if now - last_draw > 0.1:
+                                    pct = written / total_size
+                                    draw_progress(game_file, min(pct, 0.99), "Extracting")
+                                    last_draw = now
+                                    for ev in pygame.event.get():
+                                        if ev.type == pygame.QUIT:
+                                            pygame.quit(); sys.exit()
+                                        if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
+                                            shutil.rmtree(dest, ignore_errors=True)
+                                            return False
             except Exception:
                 play_sfx('error')
                 draw_progress(game_file, 0, "Zip Error")
@@ -3486,28 +3431,35 @@ def extract_and_launch(game_file, user, card):
                 shutil.rmtree(dest, ignore_errors=True)
                 return False
         else:
-            # .7z — use external 7z command
+            # .7z — use external 7z command with dir-size polling thread
+            import threading
             cmd_7z = _find_7z()
             cmd = [cmd_7z, "x", full_path, f"-o{dest}", "-y"]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            last_update = 0
-            while True:
-                line = proc.stdout.readline()
-                if not line and proc.poll() is not None:
-                    break
-                now = time.time()
-                if now - last_update > 0.2:
-                    cur_size = get_dir_size(dest)
-                    pct = cur_size / archive_size if archive_size > 0 else 0
-                    draw_progress(game_file, min(pct, 0.99), "Extracting")
-                    last_update = now
-                    for ev in pygame.event.get():
-                        if ev.type == pygame.QUIT:
-                            proc.kill(); pygame.quit(); sys.exit()
-                        if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
-                            proc.kill()
-                            shutil.rmtree(dest, ignore_errors=True)
-                            return False
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            cancelled = False
+
+            # Drain stdout in background so 7z doesn't block on pipe
+            def _drain():
+                try:
+                    while proc.stdout.read(4096):
+                        pass
+                except Exception:
+                    pass
+            threading.Thread(target=_drain, daemon=True).start()
+
+            while proc.poll() is None:
+                cur_size = get_dir_size(dest)
+                pct = cur_size / archive_size if archive_size > 0 else 0
+                draw_progress(game_file, min(pct, 0.99), "Extracting")
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        proc.kill(); pygame.quit(); sys.exit()
+                    if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
+                        proc.kill(); cancelled = True
+                if cancelled:
+                    shutil.rmtree(dest, ignore_errors=True)
+                    return False
+                time.sleep(0.25)
 
             if proc.returncode != 0:
                 play_sfx('error')
@@ -3542,11 +3494,9 @@ def extract_and_launch(game_file, user, card):
     draw_progress(game_file, 1.0, "Launching...")
     time.sleep(0.5)
 
-    if card:
-        load_memcard(user, card)
+    load_memcard(user, card)
     _launch_retroarch(game_path, core)
-    if card:
-        save_memcard(user, card)
+    save_memcard(user, card)
     return True
 
 
@@ -3759,16 +3709,15 @@ MENU_ICONS = [
 ]
 
 
-
-
 def _is_l2_held():
-    """Check if L2 trigger is currently held (axis or button)."""
+    """Check if L2 trigger is currently held (axis 4 > 0.5 or button 6)."""
     if joy is None:
         return False
     try:
-        for axis_idx in (4, 2):
-            if joy.get_numaxes() > axis_idx and joy.get_axis(axis_idx) > 0.5:
-                return True
+        # Most controllers: L2 is axis 4 (range -1 to 1, resting at -1 or 0)
+        if joy.get_numaxes() > 4 and joy.get_axis(4) > 0.5:
+            return True
+        # Fallback: some controllers map L2 to button 6
         if joy.get_numbuttons() > 6 and joy.get_button(6):
             return True
     except Exception:
@@ -3777,33 +3726,21 @@ def _is_l2_held():
 
 
 def _launch_ps2_bios():
-    """Launch RetroArch with the PS2 core but no ROM (BIOS/menu boot).
-    Uses choice_dialog for actionable error recovery."""
-    global screen, W, H, F, joy
+    """Launch RetroArch with the PS2 core but no ROM (BIOS boot)."""
     core = active_cfg.get("core_path", "")
     if not core or not os.path.exists(core):
         play_sfx('error')
-        result = choice_dialog(
-            "PS2 core not found\nSet the core path in Settings to boot BIOS.",
-            ["Open Settings", "Cancel"]
-        )
-        if result == "Open Settings":
-            settings_menu()
+        draw_center_msg("Error", "PS2 core not found!", "Set it in Settings first.")
+        _wait_any_button()
         return
     ra = _find_retroarch()
-    if not ra:
-        play_sfx('error')
-        result = choice_dialog(
-            "RetroArch not found\nInstall RetroArch or check your PATH.",
-            ["Open Settings", "Cancel"]
-        )
-        if result == "Open Settings":
-            settings_menu()
-        return
+    cmd = [ra, "-L", core]
     try:
-        subprocess.run([ra, "-L", core])
-    except Exception:
-        pass
+        subprocess.run(cmd)
+    except Exception as e:
+        play_sfx('error')
+        draw_center_msg("Launch Error", str(e)[:60], "Press any button")
+        _wait_any_button()
 
 
 # ═══ Screen: Main Menu ═════════════════════════════════════════
@@ -5139,7 +5076,7 @@ def screen_game_picker(user, card):
         vis_scroll = int(smooth_scroll)
 
         screen.fill(BG)
-        title = f"Games - {user} / {card}" if card else f"Games - {user}"
+        title = f"Games - {user} / {card}"
         search_hint = f" (filter: {search_text})" if search_text else ""
         draw_header(title + search_hint, None,
                      f"{len(filtered)} game{'s' if len(filtered) != 1 else ''}")
@@ -5320,43 +5257,22 @@ def main():
         choice = screen_main_menu()
 
         if choice == "Games":
-            # Use last-mounted card if available, otherwise prompt
-            meta = get_user_meta(user)
-            card = meta.get("last_card", "") or None
-
-            # Verify the card directory still exists
-            if card:
-                card_dir = os.path.join(USERS_DIR, user, "cards", card)
-                if not os.path.isdir(card_dir):
-                    card = None
-
-            if not card:
-                # No card mounted — give the user 3 options
-                result = choice_dialog(
-                    "No memory card mounted\nSaves won't be loaded or written.",
-                    ["Mount Card", "Play Without", "Cancel"]
-                )
-                if result == "Mount Card":
-                    screen_memcard_picker(user)
-                    meta = get_user_meta(user)
-                    card = meta.get("last_card", "") or None
-                    if not card:
-                        continue  # back to main menu
-                elif result == "Play Without":
-                    card = None  # proceed with no card
-                else:
-                    continue  # Cancel → back to main menu
-
+            # Card select → game picker
             while True:
-                launched = screen_game_picker(user, card)
-                if launched:
-                    screen, W, H, F, joy = init_display()
-                    init_sounds()
-                    apply_volume()
-                    show_welcome_back(user)
-                    pygame.event.clear()
-                else:
+                card = screen_memcard_picker(user)
+                if card is None:
                     break  # back to main menu
+
+                while True:
+                    launched = screen_game_picker(user, card)
+                    if launched:
+                        screen, W, H, F, joy = init_display()
+                        init_sounds()
+                        apply_volume()
+                        show_welcome_back(user)
+                        pygame.event.clear()
+                    else:
+                        break  # back to card picker
 
         elif choice == "Memory Cards+BIOS":
             # L2 was held — confirm then boot straight to PS2 BIOS
@@ -5385,7 +5301,6 @@ def main():
         elif choice == "Exit":
             if confirm_dialog("Exit PS2 Picker?"):
                 pygame.quit(); sys.exit()
-
 
 
 # ═══ Entry Point ═══════════════════════════════════════════════
