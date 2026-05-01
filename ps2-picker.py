@@ -20,6 +20,8 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
+VERSION = '0.1.0'
+
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
 
