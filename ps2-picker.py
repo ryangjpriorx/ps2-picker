@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.33'
+VERSION = '0.1.34'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -1332,78 +1332,6 @@ def confirm_dialog(message):
         for i, label in enumerate(["Yes", "No"]):
             bx = W // 2 + (i * scaled(120) - scaled(60))
             rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
-            if i == sel:
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
-                pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=scaled(6))
-            else:
-                pygame.draw.rect(screen, KEY_BG, rect, border_radius=scaled(6))
-            color = TXT_SEL if i == sel else TXT
-            ls = F['md_b'].render(label, True, color)
-            screen.blit(ls, ls.get_rect(center=rect.center))
-        draw_hint_bar("[A] Select   [B] Cancel")
-        pygame.display.flip()
-        clock.tick(30)
-
-
-def choice_dialog(message, options):
-    """Multi-choice dialog. Returns the selected option string, or None if cancelled."""
-    sel = 0
-    last_joy = 0
-    n = len(options)
-
-    while True:
-        now = time.time()
-        for ev in pygame.event.get():
-            if ev.type == pygame.QUIT:
-                pygame.quit(); sys.exit()
-            if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); return None
-                if ev.key == pygame.K_LEFT:
-                    sel = (sel - 1) % n; play_sfx('navigate')
-                if ev.key == pygame.K_RIGHT:
-                    sel = (sel + 1) % n; play_sfx('navigate')
-                if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    play_sfx('select'); return options[sel]
-            if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == BTN["back"]:
-                    play_sfx('back'); return None
-                if ev.button == BTN["confirm"]:
-                    play_sfx('select'); return options[sel]
-            if ev.type == pygame.JOYHATMOTION:
-                hx, hy = ev.value
-                if hx < 0:
-                    sel = (sel - 1) % n; play_sfx('navigate')
-                if hx > 0:
-                    sel = (sel + 1) % n; play_sfx('navigate')
-        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
-            xa = joy.get_axis(0)
-            if xa < -0.5:
-                sel = (sel - 1) % n; play_sfx('navigate')
-                last_joy = now
-            elif xa > 0.5:
-                sel = (sel + 1) % n; play_sfx('navigate')
-                last_joy = now
-
-        screen.fill(BG)
-        # Multi-line message rendering
-        lines = message.split('\n')
-        line_y = H // 3
-        for li, line_text in enumerate(lines):
-            lfont = F['lg'] if li == 0 else F['md']
-            lcolor = HDR if li == 0 else TXT_DIM
-            display_line = truncate(line_text.strip(), lfont, W - scaled(40))
-            ls = lfont.render(display_line, True, lcolor)
-            screen.blit(ls, ls.get_rect(center=(W // 2, line_y)))
-            line_y += ls.get_height() + scaled(6)
-
-        # Draw option buttons
-        total_w = n * scaled(120)
-        start_x = (W - total_w) // 2 + scaled(60)
-        btn_y = H // 2 + scaled(10)
-        for i, label in enumerate(options):
-            bx = start_x + i * scaled(120)
-            rect = pygame.Rect(bx - scaled(55), btn_y, scaled(110), scaled(32))
             if i == sel:
                 pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
                 pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=scaled(6))
@@ -3444,11 +3372,9 @@ def extract_and_launch(game_file, user, card):
                 if found:
                     manifest[game_key]["last_used"] = time.time()
                     save_cache_manifest(manifest)
-                    if card:
-                        load_memcard(user, card)
+                    load_memcard(user, card)
                     _launch_retroarch(found[0], core)
-                    if card:
-                        save_memcard(user, card)
+                    save_memcard(user, card)
                     return True
         del manifest[game_key]
         save_cache_manifest(manifest)
@@ -3568,11 +3494,9 @@ def extract_and_launch(game_file, user, card):
     draw_progress(game_file, 1.0, "Launching...")
     time.sleep(0.5)
 
-    if card:
-        load_memcard(user, card)
+    load_memcard(user, card)
     _launch_retroarch(game_path, core)
-    if card:
-        save_memcard(user, card)
+    save_memcard(user, card)
     return True
 
 
@@ -4302,7 +4226,17 @@ def screen_memcard_picker(user):
                 confirmed = True
 
             if confirmed:
-                if sel == total - 1:  # New card
+                # L2+A = boot to PS2 BIOS
+                if _is_l2_held():
+                    play_sfx('select')
+                    if confirm_dialog("Boot to PS2 BIOS?\nThis will launch RetroArch without a game."):
+                        fade_to_black()
+                        _launch_ps2_bios()
+                        screen, W, H, F, joy = init_display()
+                        init_sounds()
+                        apply_volume()
+                    _dirty = True; break
+                elif sel == total - 1:  # New card
                     play_sfx('select')
                     name = on_screen_keyboard("Card Name")
                     if name and name.strip():
@@ -4382,7 +4316,7 @@ def screen_memcard_picker(user):
         _draw_card_grid(items, sel, start_time,
                         f"{user}'s Cards",
                         f"{len(cards)} card{'s' if len(cards) != 1 else ''}",
-                        "[A] Browse   [Y] Mount   [X] Delete   [B] Back",
+                        "[A] Browse   [Y] Mount   [X] Delete   [L2+A] BIOS   [B] Back",
                         cols=COLS, mounted_index=mounted_idx)
 
         # Mount confirmation toast (fades out over 2 seconds)
@@ -5152,7 +5086,7 @@ def screen_game_picker(user, card):
         vis_scroll = int(smooth_scroll)
 
         screen.fill(BG)
-        title = f"Games - {user} / {card}" if card else f"Games - {user}"
+        title = f"Games - {user} / {card}"
         search_hint = f" (filter: {search_text})" if search_text else ""
         draw_header(title + search_hint, None,
                      f"{len(filtered)} game{'s' if len(filtered) != 1 else ''}")
@@ -5333,43 +5267,22 @@ def main():
         choice = screen_main_menu()
 
         if choice == "Games":
-            # Use last-mounted card if available, otherwise prompt
-            meta = get_user_meta(user)
-            card = meta.get("last_card", "") or None
-
-            # Verify the card directory still exists
-            if card:
-                card_dir = os.path.join(USERS_DIR, user, "cards", card)
-                if not os.path.isdir(card_dir):
-                    card = None
-
-            if not card:
-                # No card mounted — give the user 3 options
-                result = choice_dialog(
-                    "No memory card mounted\nSaves won't be loaded or written.",
-                    ["Mount Card", "Play Without", "Cancel"]
-                )
-                if result == "Mount Card":
-                    screen_memcard_picker(user)
-                    meta = get_user_meta(user)
-                    card = meta.get("last_card", "") or None
-                    if not card:
-                        continue  # back to main menu
-                elif result == "Play Without":
-                    card = None  # proceed with no card
-                else:
-                    continue  # Cancel → back to main menu
-
+            # Card select → game picker
             while True:
-                launched = screen_game_picker(user, card)
-                if launched:
-                    screen, W, H, F, joy = init_display()
-                    init_sounds()
-                    apply_volume()
-                    show_welcome_back(user)
-                    pygame.event.clear()
-                else:
+                card = screen_memcard_picker(user)
+                if card is None:
                     break  # back to main menu
+
+                while True:
+                    launched = screen_game_picker(user, card)
+                    if launched:
+                        screen, W, H, F, joy = init_display()
+                        init_sounds()
+                        apply_volume()
+                        show_welcome_back(user)
+                        pygame.event.clear()
+                    else:
+                        break  # back to card picker
 
         elif choice == "Memory Cards+BIOS":
             # L2 was held — confirm then boot straight to PS2 BIOS
@@ -5404,34 +5317,4 @@ def main():
 
 init_sounds()
 show_splash()
-try:
-    main()
-except Exception as _exc:
-    import traceback as _tb
-    _err_lines = _tb.format_exception(type(_exc), _exc, _exc.__traceback__)
-    _err_text = ''.join(_err_lines)
-    try:
-        screen.fill((18, 8, 32))
-        _fnt = pygame.font.SysFont('monospace', 14)
-        _y = 10
-        for _line in _err_text.splitlines():
-            screen.blit(_fnt.render(_line[:100], True, (255, 80, 80)), (10, _y))
-            _y += 16
-            if _y > H - 30:
-                break
-        screen.blit(_fnt.render('Press any key or button to exit', True, (220, 210, 190)), (10, _y + 10))
-        pygame.display.flip()
-        _waiting = True
-        while _waiting:
-            for _ev in pygame.event.get():
-                if _ev.type in (pygame.QUIT, pygame.KEYDOWN, pygame.JOYBUTTONDOWN):
-                    _waiting = False
-    except Exception:
-        pass
-    try:
-        with open(os.path.join(APP_DIR, 'crash.log'), 'w') as _f:
-            _f.write(_err_text)
-    except Exception:
-        pass
-    pygame.quit()
-    sys.exit(1)
+main()
