@@ -96,13 +96,22 @@ REF_W, REF_H = 640, 480
 def get_update_channel():
     """Read update_channel from global config.
     Returns branch name string ('main' or 'testing').
-    Config stores 0 = main, 1 = testing.
+    Config may store int (0=main, 1=testing) or string ('main'/'testing').
     """
     if os.path.exists(GLOBAL_CONFIG_PATH):
         try:
             with open(GLOBAL_CONFIG_PATH) as f:
                 cfg = json.load(f)
             channel_val = cfg.get('update_channel', 0)
+            # Accept both int and string values
+            if isinstance(channel_val, str):
+                if channel_val in ('main', 'testing'):
+                    return channel_val
+                # Try converting string '0'/'1' to int
+                try:
+                    channel_val = int(channel_val)
+                except (ValueError, TypeError):
+                    return 'main'
             return UPDATE_BRANCHES.get(channel_val, 'main')
         except Exception:
             pass
@@ -169,14 +178,14 @@ def check_for_updates():
             except Exception:
                 pass
 
-        # Fetch remote version via HTTP (just the header)
+        # Fetch remote version via HTTP
         try:
             url = f'{GITHUB_RAW_URL}/{channel}/{filename}'
             req = urllib.request.Request(url, headers={
                 'User-Agent': 'PS2Picker-Updater',
-                'Range': 'bytes=0-2047'  # Only first 2KB
             })
             with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
+                # Read only first 2KB from response body (VERSION is near top)
                 head = resp.read(2048).decode('utf-8', errors='ignore')
             rv_str = _extract_version_from_text(head)
             if rv_str:
