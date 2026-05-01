@@ -9,9 +9,14 @@
      python3 ps2-checker.py --terminal    Force terminal mode (no GUI)
 """
 
-VERSION = '0.0.6'
+VERSION = '0.1.0'
 
 import os, sys, platform, shutil, subprocess, importlib.util, json, string, time, math
+try:
+    import urllib.request, urllib.error
+    HAS_URLLIB = True
+except ImportError:
+    HAS_URLLIB = False
 
 # ═══ Platform Detection ═════════════════════════════════════════
 
@@ -164,26 +169,31 @@ def _parse_version(v):
         return (0, 0, 0)
 
 
-def _get_remote_version(channel):
-    """Read the VERSION string from the remote branch's ps2-checker.py.
+GITHUB_RAW_URL = 'https://raw.githubusercontent.com/ryangjpriorx/ps2-picker'
 
-    Uses 'git show origin/<channel>:ps2-checker.py' to read the file
-    without checking it out, then extracts the VERSION = '...' line.
-    """
+
+def _extract_version_from_text(text):
+    """Extract VERSION = '...' from a block of Python source text."""
+    for line in text.splitlines()[:20]:
+        line = line.strip()
+        if line.startswith('VERSION'):
+            parts = line.split('=', 1)
+            if len(parts) == 2:
+                return parts[1].strip().strip("\"'")
+    return None
+
+
+def _get_remote_version(channel):
+    """Read VERSION from GitHub raw content via HTTP."""
+    if not HAS_URLLIB:
+        return None
+    url = f'{GITHUB_RAW_URL}/{channel}/ps2-checker.py'
     try:
-        result = subprocess.run(
-            ['git', 'show', f'origin/{channel}:ps2-checker.py'],
-            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=15
-        )
-        if result.returncode != 0:
-            return None
-        for line in result.stdout.splitlines()[:10]:  # VERSION is near the top
-            line = line.strip()
-            if line.startswith('VERSION'):
-                # Parse: VERSION = '0.1.0' or VERSION = "0.1.0"
-                parts = line.split('=', 1)
-                if len(parts) == 2:
-                    return parts[1].strip().strip("\"'")
+        req = urllib.request.Request(url, headers={'User-Agent': 'PS2Picker'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            # Only read first 1KB — VERSION is near the top
+            head = resp.read(1024).decode('utf-8', errors='ignore')
+            return _extract_version_from_text(head)
     except Exception:
         pass
     return None
@@ -192,8 +202,8 @@ def _get_remote_version(channel):
 def check_for_updates():
     """Check if a newer version is available on the configured channel.
 
-    Compares the local VERSION constant against the remote branch's VERSION
-    using semantic version comparison (tuple of ints).
+    Uses HTTP to read the remote VERSION from GitHub raw content.
+    Compares local VERSION against remote using semantic versioning.
 
     Returns:
         dict with keys:
@@ -203,40 +213,20 @@ def check_for_updates():
             'remote_version'(str)  - Remote version string (or None)
             'error'         (str)  - Error message if check failed, else None
     """
-    if not _has_git():
-        return {'available': False, 'channel': None, 'local_version': VERSION,
-                'remote_version': None, 'error': 'git is not installed'}
-    if not _is_git_repo():
-        return {'available': False, 'channel': None, 'local_version': VERSION,
-                'remote_version': None, 'error': 'Not a git repository'}
-
     channel = get_update_channel()
 
-    # Fetch latest refs from remote
-    try:
-        result = subprocess.run(
-            ['git', 'fetch', 'origin', channel],
-            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=30
-        )
-        if result.returncode != 0:
-            return {'available': False, 'channel': channel, 'local_version': VERSION,
-                    'remote_version': None, 'error': f'Fetch failed: {result.stderr.strip()}'}
-    except subprocess.TimeoutExpired:
-        return {'available': False, 'channel': channel, 'local_version': VERSION,
-                'remote_version': None, 'error': 'Fetch timed out (no network?)'}
-    except Exception as e:
-        return {'available': False, 'channel': channel, 'local_version': VERSION,
-                'remote_version': None, 'error': str(e)}
-
+    # Get remote version via HTTP
     remote_ver = _get_remote_version(channel)
     if not remote_ver:
         return {'available': False, 'channel': channel, 'local_version': VERSION,
-                'remote_version': None, 'error': 'Could not read remote version'}
+                'remote_version': None, 'error': 'Could not reach GitHub'}
 
     local_tuple = _parse_version(VERSION)
     remote_tuple = _parse_version(remote_ver)
-    current_branch = _get_current_branch()
-    needs_switch = (current_branch != channel)
+    has_git_repo = _has_git() and _is_git_repo()
+    current_branch = _get_current_branch() if has_git_repo else None
+    needs_switch = has_git_repo and (current_branch != channel)
+    can_update = has_git_repo  # Can only auto-update inside a git repo
 
     return {
         'available': remote_tuple > local_tuple or needs_switch,
@@ -245,6 +235,7 @@ def check_for_updates():
         'remote_version': remote_ver,
         'needs_switch': needs_switch,
         'current_branch': current_branch,
+        'can_update': can_update,
         'error': None,
     }
 
@@ -767,6 +758,33 @@ def _launch():
             sys.exit(1)
 
 
+# ═══ Button Map (shared with picker via global config) ═════════
+
+DEFAULT_BUTTON_MAP = {
+    "confirm":    0,   # A
+    "back":       1,   # B
+    "extra":      2,   # X
+    "alt":        3,   # Y
+    "shoulder_l": 4,   # L1
+    "select":     6,   # Select
+    "start":      7,   # Start
+}
+
+def _load_button_map():
+    """Load button mappings from the shared global config (same as picker)."""
+    btn = dict(DEFAULT_BUTTON_MAP)
+    if os.path.exists(GLOBAL_CONFIG_PATH):
+        try:
+            with open(GLOBAL_CONFIG_PATH) as f:
+                cfg = json.load(f)
+            saved = cfg.get("button_map", {})
+            for k in btn:
+                if k in saved and isinstance(saved[k], int):
+                    btn[k] = saved[k]
+        except Exception:
+            pass
+    return btn
+
 # ═══ GUI Mode (pygame) ═════════════════════════════════════════
 
 def run_gui_mode(check_only=False):
@@ -780,15 +798,14 @@ def run_gui_mode(check_only=False):
     pygame.init()
     pygame.joystick.init()
 
-    # Detect native resolution — fullscreen on 720p or below (handhelds)
+    # Display mode: fullscreen at 720p or below, windowed above 720p
     disp_info = pygame.display.Info()
     native_h = disp_info.current_h
-    is_handheld = native_h <= 720
 
-    if is_handheld:
-        scr = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-    else:
+    if native_h > 720:
         scr = pygame.display.set_mode((REF_W, REF_H), pygame.RESIZABLE)
+    else:
+        scr = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     pygame.display.set_caption("PS2 Picker - Dependency Check")
     w, h = scr.get_size()
     scale = h / REF_H
@@ -815,6 +832,9 @@ def run_gui_mode(check_only=False):
 
     clock = pygame.time.Clock()
 
+    # Load button map (shared with picker)
+    btn = _load_button_map()
+
     # Initialize joystick
     joy = None
     if pygame.joystick.get_count() > 0:
@@ -840,6 +860,10 @@ def run_gui_mode(check_only=False):
     # Scroll state
     scroll = 0
 
+    # Controller timing (for analog stick repeat)
+    last_joy = 0
+    DPAD_DELAY = 0.18  # seconds
+
     # Animation
     start_time = time.time()
 
@@ -852,19 +876,28 @@ def run_gui_mode(check_only=False):
     update_msg = ''
     channel = get_update_channel()
 
-    # Kick off update check in background-ish (blocking but fast after fetch)
-    if _has_git() and _is_git_repo():
-        update_status = 'checking'
-        # Draw a quick "checking" frame before blocking on fetch
-        scr.fill(BG)
-        checking_surf = fonts['lg'].render('Checking for updates...', True, HINT)
-        scr.blit(checking_surf, checking_surf.get_rect(center=(w // 2, h // 2)))
-        ver_surf = fonts['sm'].render(f'v{VERSION} ({channel})', True, TXT_DIM)
-        scr.blit(ver_surf, ver_surf.get_rect(center=(w // 2, h // 2 + sc(24))))
-        pygame.display.flip()
+    # If all deps OK and not check-only, launch picker immediately
+    # Update check runs in background — don't block the user
+    if all_ok and main_app_exists and not check_only:
+        pygame.quit()
+        _launch()
+        return
 
-        update_info = check_for_updates()
-        update_status = 'result'
+    # Background update check (non-blocking)
+    import threading
+    update_status = 'checking'
+    _update_result = [None]  # mutable container for thread result
+
+    def _bg_update_check():
+        try:
+            _update_result[0] = check_for_updates()
+        except Exception as e:
+            _update_result[0] = {'available': False, 'channel': channel,
+                                 'local_version': VERSION, 'remote_version': None,
+                                 'error': f'Check failed: {e}'}
+
+    update_thread = threading.Thread(target=_bg_update_check, daemon=True)
+    update_thread.start()
 
     def refresh_status():
         nonlocal missing, req_missing, all_ok, promptable_missing
@@ -903,6 +936,11 @@ def run_gui_mode(check_only=False):
     while running:
         now = time.time()
         elapsed = now - start_time
+
+        # Poll background update thread
+        if update_status == 'checking' and not update_thread.is_alive():
+            update_info = _update_result[0]
+            update_status = 'result'
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -968,7 +1006,9 @@ def run_gui_mode(check_only=False):
                             path_input_error = ""
                     elif ev.key == pygame.K_u:
                         # U key = trigger update
-                        if update_info and update_info.get('available') and update_status == 'result':
+                        if (update_info and update_info.get('available')
+                                and update_info.get('can_update')
+                                and update_status == 'result'):
                             update_status = 'updating'
                             scr.fill(BG)
                             upd_surf = fonts['lg'].render('Updating...', True, HINT)
@@ -989,8 +1029,27 @@ def run_gui_mode(check_only=False):
                     elif ev.key == pygame.K_DOWN:
                         scroll += 1
 
+                # Hot-plug: re-detect joystick if one is connected
+                # JOYDEVICEADDED only exists in pygame 2.0+
+                if hasattr(pygame, 'JOYDEVICEADDED') and ev.type == pygame.JOYDEVICEADDED:
+                    pygame.joystick.quit()
+                    pygame.joystick.init()
+                    if pygame.joystick.get_count() > 0:
+                        joy = pygame.joystick.Joystick(0)
+                        joy.init()
+
+                # D-pad hat for scrolling
+                if ev.type == pygame.JOYHATMOTION:
+                    hx, hy = ev.value
+                    if hy == 1:   # D-pad up
+                        scroll = max(0, scroll - 1)
+                        last_joy = now
+                    elif hy == -1:  # D-pad down
+                        scroll += 1
+                        last_joy = now
+
                 if ev.type == pygame.JOYBUTTONDOWN:
-                    if ev.button == 0:  # A
+                    if ev.button in (btn['confirm'], btn['start']):  # A / Start
                         if all_ok and main_app_exists and not check_only:
                             pygame.quit()
                             _launch()
@@ -1001,10 +1060,12 @@ def run_gui_mode(check_only=False):
                             path_input_target = d['name']
                             path_input_text = ""
                             path_input_error = ""
-                    elif ev.button == 1:  # B
+                    elif ev.button == btn['back']:  # B (back/exit)
                         pygame.quit(); sys.exit(0)
-                    elif ev.button == 3:  # Y = trigger update
-                        if update_info and update_info.get('available') and update_status == 'result':
+                    elif ev.button == btn['alt']:  # Y = trigger update
+                        if (update_info and update_info.get('available')
+                                and update_info.get('can_update')
+                                and update_status == 'result'):
                             update_status = 'updating'
                             scr.fill(BG)
                             upd_surf = fonts['lg'].render('Updating...', True, HINT)
@@ -1019,101 +1080,116 @@ def run_gui_mode(check_only=False):
                             else:
                                 update_status = 'failed'
 
+        # Analog stick polling — OUTSIDE event loop so it runs every frame
+        if joy is not None and now - last_joy > DPAD_DELAY:
+            try:
+                ya = joy.get_axis(1)  # Left stick Y
+                if ya < -0.5:    # Up
+                    scroll = max(0, scroll - 1)
+                    last_joy = now
+                elif ya > 0.5:   # Down
+                    scroll += 1
+                    last_joy = now
+            except Exception:
+                pass
+
         # ─── Draw ───────────────────────────────────────────
 
         scr.fill(BG)
 
-        # Title
+        # Reserve fixed zones: header, footer, content fills the middle
+        header_h = sc(58)     # title + OS line + divider
+        footer_h = sc(72)     # summary + update status + hint bar
+        bar_h    = sc(24)     # hint bar height
+
+        # ── Header ──
         title_surf = fonts['xl'].render(f"PS2 Picker v{VERSION}", True, HDR)
-        scr.blit(title_surf, title_surf.get_rect(center=(w // 2, sc(22))))
+        scr.blit(title_surf, title_surf.get_rect(center=(w // 2, sc(20))))
 
-        # OS info
-        os_text = f"Detected: {pretty}  ({distro})  |  Python {platform.python_version()}"
+        os_text = f"Detected: {pretty}  |  Python {platform.python_version()}"
         os_surf = fonts['sm'].render(os_text, True, ACCENT)
-        scr.blit(os_surf, os_surf.get_rect(center=(w // 2, sc(44))))
+        scr.blit(os_surf, os_surf.get_rect(center=(w // 2, sc(42))))
 
-        pygame.draw.line(scr, ACCENT, (sc(10), sc(56)), (w - sc(10), sc(56)), 1)
+        pygame.draw.line(scr, ACCENT, (sc(10), header_h), (w - sc(10), header_h), 1)
 
-        # Dependency list
-        y = sc(68)
-        line_h = sc(20)
+        # ── Dependency list (scrollable content area) ──
+        content_top = header_h + sc(6)
+        content_bottom = h - footer_h
+        line_h = sc(18)
+        y = content_top - scroll * line_h
 
         for dep in deps:
             if dep['installed']:
-                # Checkmark + name
-                check = fonts['md_b'].render("\u2713", True, SUCCESS)
-                scr.blit(check, (sc(14), y))
-                name_s = fonts['md_b'].render(dep['name'], True, SUCCESS)
-                scr.blit(name_s, (sc(32), y))
-                # Description
-                desc_s = fonts['sm'].render(dep['description'], True, TXT_DIM)
-                scr.blit(desc_s, (sc(130), y + sc(2)))
+                if content_top - line_h < y < content_bottom:
+                    check = fonts['md_b'].render("\u2713", True, SUCCESS)
+                    scr.blit(check, (sc(14), y))
+                    name_s = fonts['md_b'].render(dep['name'], True, SUCCESS)
+                    scr.blit(name_s, (sc(32), y))
+                    desc_s = fonts['sm'].render(dep['description'], True, TXT_DIM)
+                    scr.blit(desc_s, (sc(130), y + sc(1)))
                 y += line_h
-                # Found path
-                if dep['found_path']:
-                    path_s = fonts['sm'].render(f"Found: {dep['found_path']}", True, TXT_DIM)
-                    scr.blit(path_s, (sc(32), y))
+                if dep.get('found_path'):
+                    if content_top - line_h < y < content_bottom:
+                        path_s = fonts['sm'].render(f"Found: {dep['found_path']}", True, TXT_DIM)
+                        scr.blit(path_s, (sc(32), y))
                     y += line_h
             else:
-                # X mark + name
-                xmark = fonts['md_b'].render("\u2717", True, DANGER)
-                scr.blit(xmark, (sc(14), y))
-                name_s = fonts['md_b'].render(dep['name'], True, DANGER)
-                scr.blit(name_s, (sc(32), y))
-                # Description
-                desc_s = fonts['sm'].render(dep['description'], True, TXT_DIM)
-                scr.blit(desc_s, (sc(130), y + sc(2)))
+                if content_top - line_h < y < content_bottom:
+                    xmark = fonts['md_b'].render("\u2717", True, DANGER)
+                    scr.blit(xmark, (sc(14), y))
+                    name_s = fonts['md_b'].render(dep['name'], True, DANGER)
+                    scr.blit(name_s, (sc(32), y))
+                    desc_s = fonts['sm'].render(dep['description'], True, TXT_DIM)
+                    scr.blit(desc_s, (sc(130), y + sc(1)))
                 y += line_h
-                # Install command
-                cmd_label = fonts['sm'].render("Install:", True, HINT)
-                scr.blit(cmd_label, (sc(32), y))
-                cmd_text = fonts['sm'].render(dep['install_cmd'], True, HDR)
-                scr.blit(cmd_text, (sc(90), y))
+                if content_top - line_h < y < content_bottom:
+                    cmd_label = fonts['sm'].render("Install:", True, HINT)
+                    scr.blit(cmd_label, (sc(32), y))
+                    cmd_text = fonts['sm'].render(dep['install_cmd'], True, HDR)
+                    scr.blit(cmd_text, (sc(90), y))
                 y += line_h
-                # Required badge
-                if dep['required']:
-                    req_s = fonts['sm'].render("(required)", True, DANGER)
-                    scr.blit(req_s, (sc(32), y))
-                else:
-                    req_s = fonts['sm'].render("(optional)", True, TXT_DIM)
-                    scr.blit(req_s, (sc(32), y))
+                if content_top - line_h < y < content_bottom:
+                    badge_text = "(required)" if dep['required'] else "(optional)"
+                    badge_col  = DANGER if dep['required'] else TXT_DIM
+                    scr.blit(fonts['sm'].render(badge_text, True, badge_col), (sc(32), y))
                 y += line_h
+            y += sc(3)
 
-            y += sc(4)  # Spacing between deps
+        # ── Footer (fixed at bottom, never overlaps deps) ──
+        fy = h - footer_h
+        pygame.draw.line(scr, ACCENT, (sc(10), fy), (w - sc(10), fy), 1)
+        fy += sc(8)
 
-        # Divider
-        pygame.draw.line(scr, ACCENT, (sc(10), y), (w - sc(10), y), 1)
-        y += sc(10)
-
-        # Summary
+        # Summary line
         if all_ok:
             summary = fonts['lg'].render(f"\u2713  All {len(deps)} dependencies satisfied!", True, SUCCESS)
-            scr.blit(summary, summary.get_rect(center=(w // 2, y + sc(6))))
         else:
             summary = fonts['lg'].render(f"\u2717  {len(missing)} of {len(deps)} missing", True, DANGER)
-            scr.blit(summary, summary.get_rect(center=(w // 2, y + sc(6))))
-        y += sc(22)
+        scr.blit(summary, summary.get_rect(center=(w // 2, fy + sc(4))))
+        fy += sc(20)
 
-        # Update status display
+        # Update status line
         if update_info and update_info.get('error'):
             upd_s = fonts['sm'].render(f"Update check: {update_info['error']}", True, TXT_DIM)
-            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, fy)))
         elif update_status == 'result' and update_info:
             if update_info['available']:
                 local_v = update_info.get('local_version', VERSION)
                 remote_v = update_info.get('remote_version', '?')
-                upd_label = f"\u2B06 Update available: v{local_v} \u2192 v{remote_v} ({channel})"
+                can_upd = update_info.get('can_update', False)
+                suffix = '  [Y] Update' if can_upd else '  (manual update needed)'
+                upd_label = f"\u2B06 v{local_v} \u2192 v{remote_v} ({channel}){suffix}"
                 upd_s = fonts['sm'].render(upd_label, True, HDR)
-                scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+                scr.blit(upd_s, upd_s.get_rect(center=(w // 2, fy)))
             else:
                 upd_s = fonts['sm'].render(f"\u2713  Up to date (v{VERSION} on {channel})", True, SUCCESS)
-                scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+                scr.blit(upd_s, upd_s.get_rect(center=(w // 2, fy)))
         elif update_status == 'done':
             upd_s = fonts['sm'].render(f"\u2713  {update_msg}", True, SUCCESS)
-            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, fy)))
         elif update_status == 'failed':
             upd_s = fonts['sm'].render(f"\u2717  {update_msg}", True, DANGER)
-            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, y + sc(4))))
+            scr.blit(upd_s, upd_s.get_rect(center=(w // 2, fy)))
 
         # Path input overlay
         if path_input_mode:
@@ -1207,4 +1283,17 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        crash_log = os.path.join(APP_DIR, 'crash.log')
+        os.makedirs(APP_DIR, exist_ok=True)
+        with open(crash_log, 'w') as f:
+            f.write(f'PS2 Checker v{VERSION} crash at {time.strftime("%Y-%m-%d %H:%M:%S")}\n')
+            f.write(f'Platform: {platform.platform()}\n')
+            f.write(f'Python: {platform.python_version()}\n\n')
+            traceback.print_exc(file=f)
+        traceback.print_exc()
+        print(f'\nCrash log saved to: {crash_log}')
+        sys.exit(1)
