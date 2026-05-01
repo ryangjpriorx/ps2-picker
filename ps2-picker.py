@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.9'
+VERSION = '0.1.10'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -4116,18 +4116,21 @@ def _format_size(size_bytes):
 
 
 def screen_save_browser(user, card):
-    """PS2-style memory card save browser.
+    """PS2-style memory card save browser — 4x3 grid layout.
 
-    Shows all saves on both Mcd001.ps2 and Mcd002.ps2 in the card directory.
-    Visual style inspired by the PS2 browser with our theme colors.
+    Shows all saves on both Mcd001.ps2 and Mcd002.ps2 in the card directory
+    as a 4-column by 3-row icon grid with animated selection and detail panel.
     """
     _need_fade = True
     start_time = time.time()
-    sel = 0
-    scroll_y = 0.0
-    target_scroll = 0.0
-    expanded = set()
+    sel = 0            # Flat index into all_saves
+    page = 0           # Current page (12 saves per page)
+    detail_open = False  # Whether the detail overlay is showing
+    detail_scroll = 0    # Scroll offset for file list in detail panel
     last_joy = 0
+
+    COLS, ROWS = 4, 3
+    PER_PAGE = COLS * ROWS
 
     # Parse both memory card slots
     card_dir = os.path.join(USERS_DIR, user, "cards", card)
@@ -4141,50 +4144,182 @@ def screen_save_browser(user, card):
             all_saves.append(s)
             slot_labels.append(slot_name)
 
+    total = len(all_saves)
+    total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+
     HEADER_H = scaled(42)
     HINT_H = scaled(22)
-    ROW_H = scaled(52)
-    FILE_ROW_H = scaled(20)
-    ICON_R = scaled(14)
+    GRID_PAD = scaled(10)  # Padding around grid area
+    CELL_GAP = scaled(6)   # Gap between cells
 
-    # Build icon surface cache from extracted pixel data
+    # Compute cell dimensions from available space
+    grid_top = HEADER_H + GRID_PAD
+    grid_bottom = H - HINT_H - GRID_PAD
+    grid_left = GRID_PAD
+    grid_right = W - GRID_PAD
+    grid_w = grid_right - grid_left
+    grid_h = grid_bottom - grid_top
+    cell_w = (grid_w - (COLS - 1) * CELL_GAP) // COLS
+    cell_h = (grid_h - (ROWS - 1) * CELL_GAP) // ROWS
+
+    # Icon size — fill most of the cell, leaving room for title text below
+    title_line_h = scaled(14)
+    icon_area_h = cell_h - title_line_h - scaled(4)
+    icon_size = min(cell_w - scaled(8), icon_area_h - scaled(4))
+    icon_size = max(scaled(24), icon_size)
+
+    # Build icon surface cache from extracted pixel data, scaled to grid size
     icon_surfs = {}
-    icon_thumb_size = ICON_R * 2 + scaled(4)
     for idx, save in enumerate(all_saves):
         if save.icon_pixels and len(save.icon_pixels) == 128 * 128 * 4:
             try:
                 ico_surf = pygame.image.frombuffer(save.icon_pixels, (128, 128), 'RGBA')
-                ico_surf = pygame.transform.smoothscale(ico_surf,
-                            (icon_thumb_size, icon_thumb_size))
+                ico_surf = pygame.transform.smoothscale(ico_surf, (icon_size, icon_size))
                 icon_surfs[idx] = ico_surf
             except Exception:
                 pass
-    LEFT_PAD = scaled(14)
-    SCROLL_SPEED = 8.0
 
-    def _total_height():
-        h = 0
-        for i, s in enumerate(all_saves):
-            h += ROW_H
-            if i in expanded:
-                h += len(s.files) * FILE_ROW_H + scaled(6)
-        return h
+    def _cell_rect(col, row):
+        """Return the pygame.Rect for a grid cell at (col, row)."""
+        cx = grid_left + col * (cell_w + CELL_GAP)
+        cy = grid_top + row * (cell_h + CELL_GAP)
+        return pygame.Rect(cx, cy, cell_w, cell_h)
 
-    def _row_y(index):
-        y = 0
-        for i in range(index):
-            y += ROW_H
-            if i in expanded:
-                y += len(all_saves[i].files) * FILE_ROW_H + scaled(6)
-        return y
+    def _sel_to_grid(index):
+        """Convert flat save index to (page, col, row)."""
+        p = index // PER_PAGE
+        local = index % PER_PAGE
+        return p, local % COLS, local // COLS
+
+    def _grid_to_sel(p, col, row):
+        """Convert (page, col, row) to flat save index."""
+        return p * PER_PAGE + row * COLS + col
+
+    def _draw_detail_panel(save, slot_label, t):
+        """Draw the save detail overlay panel."""
+        # Dimmed background
+        overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        screen.blit(overlay, (0, 0))
+
+        # Panel dimensions
+        pw = min(W - scaled(40), scaled(420))
+        ph = min(H - scaled(60), scaled(340))
+        px = (W - pw) // 2
+        py = (H - ph) // 2
+        panel_rect = pygame.Rect(px, py, pw, ph)
+
+        # Panel background with border
+        pygame.draw.rect(screen, BG, panel_rect, border_radius=scaled(6))
+        border_alpha = int(180 + 50 * math.sin(t * 2.5))
+        border_color = _blend(BG, ACCENT, border_alpha / 255)
+        pygame.draw.rect(screen, border_color, panel_rect, 2, border_radius=scaled(6))
+
+        inner_x = px + scaled(14)
+        inner_w = pw - scaled(28)
+        cy = py + scaled(12)
+
+        # Icon + Title header area
+        header_icon_size = min(scaled(64), icon_size)
+        if all_saves.index(save) in icon_surfs:
+            ico = icon_surfs[all_saves.index(save)]
+            ico_scaled = pygame.transform.smoothscale(ico, (header_icon_size, header_icon_size))
+            screen.blit(ico_scaled, (inner_x, cy))
+        else:
+            _icon_save_slot(screen, inner_x + header_icon_size // 2,
+                            cy + header_icon_size // 2,
+                            header_icon_size // 3, t, True)
+
+        title_x = inner_x + header_icon_size + scaled(10)
+        title_w = inner_w - header_icon_size - scaled(10)
+        title_text = truncate(save.title, F['md_b'], title_w)
+        ts = F['md_b'].render(title_text, True, HDR)
+        screen.blit(ts, (title_x, cy + scaled(4)))
+
+        dir_text = truncate(save.name, F['sm'], title_w)
+        ds = F['sm'].render(dir_text, True, TXT_DIM)
+        screen.blit(ds, (title_x, cy + scaled(22)))
+
+        slot_surf = F['sm'].render(slot_label, True, ACCENT)
+        screen.blit(slot_surf, (title_x, cy + scaled(36)))
+
+        cy += max(header_icon_size, scaled(52)) + scaled(10)
+
+        # Separator line
+        pygame.draw.line(screen, _blend(BG, ACCENT, 0.3),
+                         (inner_x, cy), (inner_x + inner_w, cy), 1)
+        cy += scaled(8)
+
+        # Info fields
+        info_items = []
+        if save.modified:
+            info_items.append(("Date", save.modified.strftime('%Y-%m-%d %H:%M')))
+        info_items.append(("Size", _format_size(save.size)))
+        info_items.append(("Files", str(save.file_count)))
+
+        for label, value in info_items:
+            if cy + scaled(16) > py + ph - scaled(30):
+                break
+            ls = F['sm'].render(f"{label}:", True, TXT_DIM)
+            vs = F['sm'].render(value, True, TXT)
+            screen.blit(ls, (inner_x, cy))
+            screen.blit(vs, (inner_x + scaled(52), cy))
+            cy += scaled(16)
+
+        cy += scaled(6)
+
+        # File listing with scroll support
+        if save.files:
+            pygame.draw.line(screen, _blend(BG, ACCENT, 0.2),
+                             (inner_x, cy), (inner_x + inner_w, cy), 1)
+            cy += scaled(6)
+            file_label = F['sm'].render("Files:", True, ACCENT)
+            screen.blit(file_label, (inner_x, cy))
+            cy += scaled(14)
+
+            file_area_top = cy
+            file_area_bottom = py + ph - scaled(28)
+            file_area_h = file_area_bottom - file_area_top
+            file_line_h = scaled(14)
+            max_visible = max(1, file_area_h // file_line_h)
+
+            visible_files = save.files[detail_scroll:detail_scroll + max_visible]
+            clip_rect = pygame.Rect(inner_x, file_area_top, inner_w, file_area_h)
+            screen.set_clip(clip_rect)
+            fy = file_area_top
+            for fname, fsize, fmod in visible_files:
+                _icon_file_item(screen, inner_x + scaled(6), fy + file_line_h // 2,
+                                scaled(5), t, False)
+                fn = truncate(fname, F['sm'], inner_w - scaled(80))
+                screen.blit(F['sm'].render(fn, True, TXT_DIM),
+                            (inner_x + scaled(16), fy))
+                screen.blit(F['sm'].render(_format_size(fsize), True,
+                            _blend(TXT_DIM, BG, 0.3)),
+                            (inner_x + inner_w - scaled(50), fy))
+                fy += file_line_h
+            screen.set_clip(None)
+
+            # Scroll indicators
+            if detail_scroll > 0:
+                arr = F['sm'].render("\u25b2", True, ACCENT)
+                screen.blit(arr, (inner_x + inner_w - scaled(12), file_area_top - scaled(12)))
+            if detail_scroll + max_visible < len(save.files):
+                arr = F['sm'].render("\u25bc", True, ACCENT)
+                screen.blit(arr, (inner_x + inner_w - scaled(12), file_area_bottom - scaled(2)))
+
+        # Hint text at bottom of panel
+        hint_text = "[B] Close"
+        if save.files and len(save.files) > 0:
+            hint_text = "[\u2191\u2193] Scroll Files   [B] Close"
+        hs = F['sm'].render(hint_text, True, TXT_DIM)
+        screen.blit(hs, hs.get_rect(centerx=px + pw // 2, bottom=py + ph - scaled(6)))
 
     while True:
         now = time.time()
         t = now - start_time
-        dt = clock.get_time() / 1000.0
 
-        total = len(all_saves)
         if total == 0:
+            # Empty card screen
             screen.fill(BG)
             title_surf = F['lg'].render(f"{card}", True, HDR)
             screen.blit(title_surf, (scaled(12), scaled(10)))
@@ -4210,68 +4345,148 @@ def screen_save_browser(user, card):
             clock.tick(30)
             continue
 
+        # ── Input handling ──
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
+
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); fade_to_black(); return
-                elif ev.key == pygame.K_UP:
-                    sel = max(0, sel - 1); play_sfx('navigate')
-                elif ev.key == pygame.K_DOWN:
-                    sel = min(total - 1, sel + 1); play_sfx('navigate')
-                elif ev.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    play_sfx('select')
-                    if sel in expanded:
-                        expanded.discard(sel)
-                    else:
-                        expanded.add(sel)
+                if detail_open:
+                    # Detail panel input
+                    if ev.key == pygame.K_ESCAPE:
+                        play_sfx('back'); detail_open = False; detail_scroll = 0
+                    elif ev.key == pygame.K_UP:
+                        if detail_scroll > 0:
+                            detail_scroll -= 1; play_sfx('navigate')
+                    elif ev.key == pygame.K_DOWN:
+                        save = all_saves[sel]
+                        file_area_h = min(H - scaled(60), scaled(340)) - scaled(180)
+                        max_vis = max(1, file_area_h // scaled(14))
+                        if detail_scroll + max_vis < len(save.files):
+                            detail_scroll += 1; play_sfx('navigate')
+                else:
+                    # Grid navigation
+                    if ev.key == pygame.K_ESCAPE:
+                        play_sfx('back'); fade_to_black(); return
+                    elif ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        if sel < total:
+                            play_sfx('select'); detail_open = True; detail_scroll = 0
+                    elif ev.key == pygame.K_LEFT:
+                        if sel % COLS > 0:
+                            sel -= 1; play_sfx('navigate')
+                        elif page > 0:
+                            page -= 1; sel = page * PER_PAGE + COLS - 1
+                            sel = min(sel, total - 1); play_sfx('navigate')
+                    elif ev.key == pygame.K_RIGHT:
+                        if sel % COLS < COLS - 1 and sel + 1 < total:
+                            sel += 1; play_sfx('navigate')
+                        elif page < total_pages - 1:
+                            page += 1; sel = page * PER_PAGE
+                            sel = min(sel, total - 1); play_sfx('navigate')
+                    elif ev.key == pygame.K_UP:
+                        if sel - COLS >= page * PER_PAGE:
+                            sel -= COLS; play_sfx('navigate')
+                    elif ev.key == pygame.K_DOWN:
+                        if sel + COLS < min((page + 1) * PER_PAGE, total):
+                            sel += COLS; play_sfx('navigate')
+                    elif ev.key == pygame.K_PAGEUP:
+                        if page > 0:
+                            page -= 1; sel = page * PER_PAGE; play_sfx('navigate')
+                    elif ev.key == pygame.K_PAGEDOWN:
+                        if page < total_pages - 1:
+                            page += 1
+                            sel = min(page * PER_PAGE, total - 1)
+                            play_sfx('navigate')
+
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == BTN["back"]:
-                    play_sfx('back'); fade_to_black(); return
-                elif ev.button == BTN["confirm"]:
-                    play_sfx('select')
-                    if sel in expanded:
-                        expanded.discard(sel)
-                    else:
-                        expanded.add(sel)
+                if detail_open:
+                    if ev.button == BTN["back"]:
+                        play_sfx('back'); detail_open = False; detail_scroll = 0
+                else:
+                    if ev.button == BTN["back"]:
+                        play_sfx('back'); fade_to_black(); return
+                    elif ev.button == BTN["confirm"]:
+                        if sel < total:
+                            play_sfx('select'); detail_open = True; detail_scroll = 0
+                    elif ev.button == BTN.get("shoulder_l", -1):
+                        if page > 0:
+                            page -= 1; sel = page * PER_PAGE
+                            sel = min(sel, total - 1); play_sfx('navigate')
+
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
-                if hy == 1:
-                    sel = max(0, sel - 1); play_sfx('navigate')
-                elif hy == -1:
-                    sel = min(total - 1, sel + 1); play_sfx('navigate')
+                if detail_open:
+                    save = all_saves[sel]
+                    file_area_h = min(H - scaled(60), scaled(340)) - scaled(180)
+                    max_vis = max(1, file_area_h // scaled(14))
+                    if hy == 1 and detail_scroll > 0:
+                        detail_scroll -= 1; play_sfx('navigate')
+                    elif hy == -1 and detail_scroll + max_vis < len(save.files):
+                        detail_scroll += 1; play_sfx('navigate')
+                else:
+                    if hx == -1:
+                        if sel % COLS > 0:
+                            sel -= 1; play_sfx('navigate')
+                        elif page > 0:
+                            page -= 1; sel = page * PER_PAGE + COLS - 1
+                            sel = min(sel, total - 1); play_sfx('navigate')
+                    elif hx == 1:
+                        if sel % COLS < COLS - 1 and sel + 1 < total:
+                            sel += 1; play_sfx('navigate')
+                        elif page < total_pages - 1:
+                            page += 1; sel = page * PER_PAGE
+                            sel = min(sel, total - 1); play_sfx('navigate')
+                    elif hy == 1:   # dpad up
+                        if sel - COLS >= page * PER_PAGE:
+                            sel -= COLS; play_sfx('navigate')
+                    elif hy == -1:  # dpad down
+                        if sel + COLS < min((page + 1) * PER_PAGE, total):
+                            sel += COLS; play_sfx('navigate')
 
-        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+        # Analog stick navigation (grid only, not detail panel)
+        if not detail_open and joy is not None and now - last_joy > DPAD_DELAY / 1000:
             moved = False
             try:
+                ax = joy.get_axis(0)
                 ay = joy.get_axis(1)
-                if ay < -0.5:
-                    sel = max(0, sel - 1); moved = True
+                if ax < -0.5:
+                    if sel % COLS > 0:
+                        sel -= 1; moved = True
+                    elif page > 0:
+                        page -= 1; sel = page * PER_PAGE + COLS - 1
+                        sel = min(sel, total - 1); moved = True
+                elif ax > 0.5:
+                    if sel % COLS < COLS - 1 and sel + 1 < total:
+                        sel += 1; moved = True
+                    elif page < total_pages - 1:
+                        page += 1; sel = page * PER_PAGE
+                        sel = min(sel, total - 1); moved = True
+                elif ay < -0.5:
+                    if sel - COLS >= page * PER_PAGE:
+                        sel -= COLS; moved = True
                 elif ay > 0.5:
-                    sel = min(total - 1, sel + 1); moved = True
+                    if sel + COLS < min((page + 1) * PER_PAGE, total):
+                        sel += COLS; moved = True
             except Exception:
                 pass
             if moved:
                 play_sfx('navigate'); last_joy = now
 
-        # Scroll tracking
-        view_h = H - HEADER_H - HINT_H
-        sel_y = _row_y(sel)
-        if sel_y < target_scroll:
-            target_scroll = sel_y
-        if sel_y + ROW_H > target_scroll + view_h:
-            target_scroll = sel_y + ROW_H - view_h
-        target_scroll = max(0, min(target_scroll, max(0, _total_height() - view_h)))
-        scroll_y += (target_scroll - scroll_y) * min(1.0, dt * SCROLL_SPEED)
+        # Keep sel and page in sync
+        sel = max(0, min(sel, total - 1))
+        page = sel // PER_PAGE
 
-        # Draw
+        # ── Draw ──
         screen.fill(BG)
 
         # Header
         title_surf = F['lg'].render(f"{card}", True, HDR)
         screen.blit(title_surf, (scaled(12), scaled(10)))
-        sub_str = f"{total} save{'s' if total != 1 else ''}  \u2022  Memory Card Browser"
+        page_str = f"Page {page + 1}/{total_pages}" if total_pages > 1 else ""
+        sub_str = f"{total} save{'s' if total != 1 else ''}"
+        if page_str:
+            sub_str += f"  \u2022  {page_str}"
+        sub_str += "  \u2022  Memory Card Browser"
         sub = F['sm'].render(sub_str, True, TXT_DIM)
         screen.blit(sub, (W - sub.get_width() - scaled(12), scaled(16)))
         pygame.draw.line(screen, _blend(BG, ACCENT, 0.5),
@@ -4279,120 +4494,86 @@ def screen_save_browser(user, card):
         pygame.draw.line(screen, _blend(BG, ACCENT, 0.25),
                          (scaled(8), HEADER_H + 1), (W - scaled(8), HEADER_H + 1), 1)
 
-        content_rect = pygame.Rect(0, HEADER_H + 2, W, view_h)
-        screen.set_clip(content_rect)
+        # Draw grid cells for current page
+        page_start = page * PER_PAGE
+        page_end = min(page_start + PER_PAGE, total)
 
-        text_x_base = LEFT_PAD + ICON_R * 2 + scaled(16)
-        draw_y = HEADER_H + 2 - int(scroll_y)
-        for i, save in enumerate(all_saves):
-            is_sel = (i == sel)
-            is_exp = (i in expanded)
-            ry = draw_y
+        for idx in range(page_start, page_end):
+            local = idx - page_start
+            col = local % COLS
+            row = local // COLS
+            rect = _cell_rect(col, row)
+            save = all_saves[idx]
+            is_sel = (idx == sel)
 
-            if ry + ROW_H > HEADER_H and ry < H - HINT_H:
-                row_rect = pygame.Rect(scaled(6), ry + 1, W - scaled(12), ROW_H - 2)
+            # Cell background
+            if is_sel:
+                glow_alpha = int(80 + 40 * math.sin(t * 3))
+                glow_color = _blend(BG, ACCENT, glow_alpha / 255)
+                pygame.draw.rect(screen, glow_color, rect.inflate(scaled(4), scaled(4)),
+                                 border_radius=scaled(6))
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(5))
+                # Animated selection border
+                bdr_alpha = int(200 + 55 * math.sin(t * 3.5))
+                bdr_color = _blend(ACCENT, HDR, bdr_alpha / 255)
+                pygame.draw.rect(screen, bdr_color, rect, 2, border_radius=scaled(5))
+            else:
+                cell_bg = _blend(BG, BAR_BG, 0.25)
+                pygame.draw.rect(screen, cell_bg, rect, border_radius=scaled(4))
+                pygame.draw.rect(screen, _blend(BG, ACCENT, 0.12), rect, 1,
+                                 border_radius=scaled(4))
 
+            # Icon centered in upper portion of cell
+            icon_cx = rect.centerx
+            icon_cy = rect.top + scaled(4) + icon_area_h // 2
+
+            if idx in icon_surfs:
+                ico = icon_surfs[idx]
+                iw, ih = ico.get_size()
+                # Subtle breathing scale on selected icon
                 if is_sel:
-                    glow_alpha = int(80 + 40 * math.sin(t * 3))
-                    glow_color = _blend(BG, ACCENT, glow_alpha / 255)
-                    pygame.draw.rect(screen, glow_color, row_rect.inflate(scaled(4), scaled(2)),
-                                     border_radius=scaled(4))
-                    pygame.draw.rect(screen, SEL_BG, row_rect, border_radius=scaled(4))
-                    bar_h = int(ROW_H * (0.5 + 0.15 * math.sin(t * 4)))
-                    bar_rect = pygame.Rect(row_rect.x, ry + (ROW_H - bar_h) // 2,
-                                           scaled(3), bar_h)
-                    pygame.draw.rect(screen, ACCENT, bar_rect, border_radius=scaled(1))
+                    s_factor = 1.0 + 0.03 * math.sin(t * 2.5)
+                    disp_w = int(iw * s_factor)
+                    disp_h = int(ih * s_factor)
+                    ico_disp = pygame.transform.smoothscale(ico, (disp_w, disp_h))
                 else:
-                    if i % 2 == 0:
-                        pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.3), row_rect,
-                                         border_radius=scaled(3))
+                    disp_w, disp_h = iw, ih
+                    ico_disp = ico
+                screen.blit(ico_disp, (icon_cx - disp_w // 2, icon_cy - disp_h // 2))
+            else:
+                # Procedural fallback disc icon
+                fallback_r = min(icon_size // 2, int(icon_area_h * 0.35))
+                _icon_save_slot(screen, icon_cx, icon_cy, fallback_r, t, is_sel)
 
-                sep_y = ry + ROW_H - 1
-                pygame.draw.line(screen, _blend(BG, ACCENT, 0.15),
-                                 (scaled(14), sep_y), (W - scaled(14), sep_y), 1)
+            # Title text below icon
+            title_y = rect.bottom - title_line_h - scaled(2)
+            title_font = F['sm']
+            title_color = HDR if is_sel else TXT
+            title_text = truncate(save.title, title_font, cell_w - scaled(8))
+            ts = title_font.render(title_text, True, title_color)
+            ts_rect = ts.get_rect(centerx=rect.centerx, top=title_y)
+            screen.blit(ts, ts_rect)
 
-                icon_cx = LEFT_PAD + ICON_R + scaled(4)
-                icon_cy = ry + ROW_H // 2
-                if i in icon_surfs:
-                    # Render extracted PS2 save icon thumbnail
-                    ico = icon_surfs[i]
-                    iw, ih = ico.get_size()
-                    ix = icon_cx - iw // 2
-                    iy = icon_cy - ih // 2
-                    screen.blit(ico, (ix, iy))
-                    if is_sel:
-                        # Glow border around selected icon
-                        border_rect = pygame.Rect(ix - 1, iy - 1, iw + 2, ih + 2)
-                        border_alpha = int(180 + 60 * math.sin(t * 3))
-                        border_color = _blend(ACCENT, HDR, border_alpha / 255)
-                        pygame.draw.rect(screen, border_color, border_rect, 2,
-                                         border_radius=scaled(2))
-                else:
-                    _icon_save_slot(screen, icon_cx, icon_cy, ICON_R, t, is_sel)
+        # Page dots indicator (if multiple pages)
+        if total_pages > 1:
+            dot_y = grid_bottom + scaled(4)
+            dot_total_w = total_pages * scaled(8) + (total_pages - 1) * scaled(4)
+            dot_start_x = (W - dot_total_w) // 2
+            for pi in range(total_pages):
+                dx = dot_start_x + pi * (scaled(8) + scaled(4))
+                color = ACCENT if pi == page else _blend(BG, ACCENT, 0.3)
+                r = scaled(3) if pi == page else scaled(2)
+                pygame.draw.circle(screen, color, (dx + scaled(4), dot_y), r)
 
-                text_x = text_x_base
-                max_text_w = W - text_x - scaled(60)
+        # Hint bar
+        hint_parts = ["[A] Details", "[B] Back"]
+        if total_pages > 1:
+            hint_parts.insert(1, "[L1] Prev Page")
+        draw_hint_bar("   ".join(hint_parts))
 
-                title_color = HDR if is_sel else TXT
-                title_font = F['md_b'] if is_sel else F['md']
-                title_text = truncate(save.title, title_font, max_text_w)
-                ts = title_font.render(title_text, True, title_color)
-                screen.blit(ts, (text_x, ry + scaled(6)))
-
-                date_str = save.modified.strftime('%Y-%m-%d') if save.modified else '???'
-                sub_text = f"{save.name}  \u2022  {slot_labels[i]}  \u2022  {date_str}"
-                sub_color = ACCENT if is_sel else TXT_DIM
-                ss = F['sm'].render(truncate(sub_text, F['sm'], max_text_w), True, sub_color)
-                screen.blit(ss, (text_x, ry + scaled(28)))
-
-                size_str = _format_size(save.size)
-                size_surf = F['sm'].render(size_str, True, TXT_DIM)
-                screen.blit(size_surf, (W - size_surf.get_width() - scaled(16),
-                                        ry + ROW_H // 2 - size_surf.get_height() // 2))
-
-                if is_sel:
-                    arrow = "\u25bc" if is_exp else "\u25b6"
-                    arrow_surf = F['sm'].render(arrow, True, ACCENT)
-                    screen.blit(arrow_surf, (W - scaled(50) - size_surf.get_width(),
-                                             ry + ROW_H // 2 - arrow_surf.get_height() // 2))
-
-            draw_y += ROW_H
-
-            if is_exp and save.files:
-                for fi, (fname, fsize, fmod) in enumerate(save.files):
-                    fy = draw_y
-                    if fy + FILE_ROW_H > HEADER_H and fy < H - HINT_H:
-                        file_icon_x = LEFT_PAD + scaled(28)
-                        _icon_file_item(screen, file_icon_x, fy + FILE_ROW_H // 2,
-                                        scaled(7), t, False)
-                        fn_surf = F['sm'].render(
-                            truncate(fname, F['sm'], W - text_x_base - scaled(80)),
-                            True, TXT_DIM)
-                        screen.blit(fn_surf, (text_x_base + scaled(8), fy + scaled(2)))
-                        fs_surf = F['sm'].render(_format_size(fsize), True,
-                                                 _blend(TXT_DIM, BG, 0.3))
-                        screen.blit(fs_surf, (W - fs_surf.get_width() - scaled(16),
-                                              fy + scaled(2)))
-                    draw_y += FILE_ROW_H
-                draw_y += scaled(6)
-
-        screen.set_clip(None)
-
-        if _total_height() > view_h:
-            track_x = W - scaled(4)
-            track_top = HEADER_H + 2
-            track_h = view_h
-            thumb_h = max(scaled(20), int(track_h * view_h / _total_height()))
-            thumb_y = track_top + int((track_h - thumb_h) * scroll_y /
-                                      max(1, _total_height() - view_h))
-            pygame.draw.rect(screen, _blend(BG, ACCENT, 0.15),
-                             (track_x, track_top, scaled(3), track_h),
-                             border_radius=scaled(1))
-            pygame.draw.rect(screen, _blend(BG, ACCENT, 0.5),
-                             (track_x, thumb_y, scaled(3), thumb_h),
-                             border_radius=scaled(1))
-
-        draw_hint_bar("[A] Expand/Collapse   [B] Back")
+        # Detail panel overlay (drawn on top of everything)
+        if detail_open and sel < total:
+            _draw_detail_panel(all_saves[sel], slot_labels[sel], t)
 
         pygame.display.flip()
         if _need_fade:
