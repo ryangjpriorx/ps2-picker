@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.0.3'
+VERSION = '0.0.4'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
@@ -1766,7 +1766,7 @@ def settings_menu(username=None):
 
         screen.fill(BG)
         title = f"Settings - {username}" if username else "Global Settings"
-        draw_header(title, "[A] Edit   [B] Back")
+        draw_header(title, "[A] Edit   [B] Back", f"v{VERSION}")
 
         y = scaled(60)
         for i, (label, key) in enumerate(items):
