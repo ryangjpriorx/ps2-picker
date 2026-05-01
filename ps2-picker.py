@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.14'
+VERSION = '0.1.15'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -3892,6 +3892,8 @@ def screen_user_picker():
     last_joy = 0
     _need_fade = True
     start_time = time.time()
+    _mount_toast_time = 0    # timestamp of last mount action (for toast)
+    _mount_toast_name = ""   # name of card that was just mounted
     COLS = 3
 
     while True:
@@ -3980,6 +3982,8 @@ def screen_memcard_picker(user):
     last_joy = 0
     _need_fade = True
     start_time = time.time()
+    _mount_toast_time = 0    # timestamp of last mount action (for toast)
+    _mount_toast_name = ""   # name of card that was just mounted
     COLS = 3
 
     while True:
@@ -4034,11 +4038,13 @@ def screen_memcard_picker(user):
             if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["alt"]:
                 do_mount = True
             if do_mount and sel < len(cards):
-                # Save mounted card to meta immediately so badge updates
+                # Save mounted card to meta immediately — stay on screen
                 meta = get_user_meta(user)
                 meta["last_card"] = cards[sel]
                 save_user_meta(user, meta)
-                play_sfx('select'); fade_to_black(); return cards[sel]
+                play_sfx('select')
+                _mount_toast_name = cards[sel]
+                _mount_toast_time = time.time()
 
             # Delete card (X button)
             do_delete = False
@@ -4095,6 +4101,28 @@ def screen_memcard_picker(user):
                         f"{len(cards)} card{'s' if len(cards) != 1 else ''}",
                         "[A] Browse   [Y] Mount   [X] Delete   [B] Back",
                         cols=COLS, mounted_index=mounted_idx)
+
+        # Mount confirmation toast (fades out over 2 seconds)
+        toast_elapsed = now - _mount_toast_time
+        if _mount_toast_time > 0 and toast_elapsed < 2.0:
+            toast_alpha = max(0, min(255, int(255 * (1.0 - toast_elapsed / 2.0))))
+            toast_text = f"\u2713  {_mount_toast_name} mounted"
+            toast_font = F['md']
+            toast_surf = toast_font.render(toast_text, True, BG)
+            tw = toast_surf.get_width() + scaled(24)
+            th = toast_surf.get_height() + scaled(10)
+            tx = (W - tw) // 2
+            ty = H // 2 - th // 2
+            toast_bg = pygame.Surface((tw, th), pygame.SRCALPHA)
+            toast_bg.fill((*ACCENT, toast_alpha))
+            toast_bg_rect = pygame.Rect(0, 0, tw, th)
+            pygame.draw.rect(toast_bg, (*ACCENT, toast_alpha), toast_bg_rect,
+                             border_radius=scaled(6))
+            screen.blit(toast_bg, (tx, ty))
+            toast_surf.set_alpha(toast_alpha)
+            screen.blit(toast_surf, toast_surf.get_rect(center=(W // 2, ty + th // 2)))
+
+        pygame.display.flip()
         if _need_fade:
             fade_from_black(); _need_fade = False
         clock.tick(60)
