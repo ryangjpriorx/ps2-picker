@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.23'
+VERSION = '0.1.24'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -61,6 +61,7 @@ DEFAULT_CONFIG = {
     "volume": 0.5,                                       # UI sound volume (0.0–1.0)
     "muted": False,                                      # Global mute toggle
     "setup_complete": False,                              # First-time wizard completed?
+    "update_channel": 0,                                   # 0 = stable/main, 1 = testing
 }
 
 # ═══ Configuration System ══════════════════════════════════════
@@ -2104,6 +2105,7 @@ def settings_menu(username=None):
     }
     sel = 0
     last_joy = 0
+    _start_time = time.time()
 
     while True:
         now = time.time()
@@ -2147,20 +2149,50 @@ def settings_menu(username=None):
             if moved:
                 play_sfx('navigate'); last_joy = now
 
-        screen.fill(BG)
-        title = f"Settings - {username}" if username else "Global Settings"
-        draw_header(title, "[A] Edit   [B] Back", f"v{VERSION}")
+        t = time.time() - _start_time
 
-        y = scaled(60)
+        screen.fill(BG)
+
+        # Themed header
+        title = f"Settings - {username}" if username else "Global Settings"
+        title_surf = F['lg'].render(title, True, HDR)
+        screen.blit(title_surf, (scaled(12), scaled(10)))
+        ver_surf = F['sm'].render(f"v{VERSION}", True, TXT_DIM)
+        screen.blit(ver_surf, (W - ver_surf.get_width() - scaled(12), scaled(16)))
+        pygame.draw.line(screen, _blend(BG, ACCENT, 0.5),
+                         (scaled(8), scaled(42) - 1), (W - scaled(8), scaled(42) - 1), 1)
+        pygame.draw.line(screen, _blend(BG, ACCENT, 0.25),
+                         (scaled(8), scaled(42) + 1), (W - scaled(8), scaled(42) + 1), 1)
+
+        y = scaled(50)
+        ROW_H_S = scaled(42)
         for i, (label, key) in enumerate(items):
             is_sel = (i == sel)
-            rect = pygame.Rect(scaled(20), y, W - scaled(40), scaled(38))
-            if is_sel:
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
-            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
+            rect = pygame.Rect(scaled(14), y, W - scaled(28), ROW_H_S)
 
-            lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
-            screen.blit(lbl, (rect.x + scaled(12), rect.y + scaled(4)))
+            if is_sel:
+                # Animated selection glow
+                glow_alpha = int(80 + 40 * math.sin(t * 3))
+                glow_color = _blend(BG, ACCENT, glow_alpha / 255)
+                pygame.draw.rect(screen, glow_color,
+                                 rect.inflate(scaled(4), scaled(2)),
+                                 border_radius=scaled(6))
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(5))
+                # Animated accent side bar
+                bar_h = int(ROW_H_S * (0.5 + 0.15 * math.sin(t * 4)))
+                accent_rect = pygame.Rect(rect.x, y + (ROW_H_S - bar_h) // 2,
+                                          scaled(3), bar_h)
+                pygame.draw.rect(screen, ACCENT, accent_rect, border_radius=scaled(1))
+            else:
+                if i % 2 == 0:
+                    pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.3),
+                                     rect, border_radius=scaled(4))
+                pygame.draw.rect(screen, _blend(BG, ACCENT, 0.12),
+                                 rect, 1, border_radius=scaled(4))
+
+            text_x = rect.x + scaled(16)
+            lbl = F['md_b' if is_sel else 'md'].render(label, True, HDR if is_sel else TXT)
+            screen.blit(lbl, (text_x, rect.y + scaled(4)))
 
             # Show current value for editable settings (skip submenu-only items)
             if key not in ("back", "theme", "controller_map", "update_channel"):
@@ -2175,7 +2207,8 @@ def settings_menu(username=None):
                 else:
                     val_str = truncate(str(val), F['sm'], W // 2 - scaled(20)) if val else "(not set)"
                 vs = F['sm'].render(val_str, True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(vs, (rect.right - vs.get_width() - scaled(12), rect.y + scaled(10)))
+                screen.blit(vs, (rect.right - vs.get_width() - scaled(12),
+                                 rect.y + ROW_H_S // 2 - vs.get_height() // 2))
             elif key == "update_channel":
                 ch_val = active_cfg.get("update_channel", 0)
                 ch_label = "Testing" if ch_val == 1 else "Stable"
@@ -2188,12 +2221,20 @@ def settings_menu(username=None):
                 if key == "cache_manager":
                     manifest = load_cache_manifest()
                     count = len(manifest)
-                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}", True, ACCENT if is_sel else TXT_DIM)
-                    screen.blit(info, (rect.right - info.get_width() - scaled(28), rect.y + scaled(10)))
+                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}",
+                                          True, ACCENT if is_sel else TXT_DIM)
+                    screen.blit(info, (rect.right - info.get_width() - scaled(28),
+                                      rect.y + ROW_H_S // 2 - info.get_height() // 2))
                 chev = F['md'].render("\u203A", True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(chev, (rect.right - chev.get_width() - scaled(12), rect.y + scaled(4)))
+                screen.blit(chev, (rect.right - chev.get_width() - scaled(12),
+                                   rect.y + ROW_H_S // 2 - chev.get_height() // 2))
 
-            y += scaled(44)
+            # Subtle separator
+            sep_y = y + ROW_H_S + scaled(1)
+            pygame.draw.line(screen, _blend(BG, ACCENT, 0.08),
+                             (scaled(22), sep_y), (W - scaled(22), sep_y), 1)
+
+            y += ROW_H_S + scaled(4)
 
         current_key = items[sel][1]
         hint = setting_hints.get(current_key, "")
@@ -2203,7 +2244,7 @@ def settings_menu(username=None):
         pygame.display.flip()
         if _need_fade:
             fade_from_black(); _need_fade = False
-        clock.tick(30)
+        clock.tick(60)
 
 
 # ═══ Controller Mapping Submenu ══════════════════════════════
@@ -2874,7 +2915,6 @@ def _handle_setting(key, username=None):
         if confirm_dialog(f"Switch to {new_label} channel?\nThe app will restart to apply this change."):
             active_cfg["update_channel"] = new_val
             save_global_config(active_cfg)
-            # Show restart message briefly
             screen.fill(BG)
             r1 = F['lg'].render(f"Switching to {new_label}", True, HDR)
             r2 = F['sm'].render("Restarting...", True, TXT_DIM)
