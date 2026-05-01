@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.12'
+VERSION = '0.1.13'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -3753,9 +3753,10 @@ def _icon_add_card(surf, cx, cy, r, t, selected):
     _icon_add_user(surf, cx, cy, r, t, selected)
 
 
-def _draw_card_grid(items, sel, start_time, title, subtitle, hint_text, cols=3):
+def _draw_card_grid(items, sel, start_time, title, subtitle, hint_text, cols=3, mounted_index=-1):
     """Shared animated card grid drawer for picker screens.
     items = [(label, icon_fn, subtitle_text), ...]
+    mounted_index = index of the currently mounted/active card (-1 for none).
     Returns nothing — draws one frame."""
     t = time.time() - start_time
     HEADER_H = scaled(42)
@@ -3830,6 +3831,22 @@ def _draw_card_grid(items, sel, start_time, title, subtitle, hint_text, cols=3):
             sf = F['sm'].render(sub, True, ACCENT if is_sel else TXT_DIM)
             sf_rect = sf.get_rect(centerx=rect.centerx, y=rect.y + int(cell_h * 0.84))
             screen.blit(sf, sf_rect)
+
+        # Mounted badge
+        if i == mounted_index:
+            badge_text = "MOUNTED"
+            badge_font = F['sm']
+            badge_surf = badge_font.render(badge_text, True, BG)
+            bw = badge_surf.get_width() + scaled(8)
+            bh = badge_surf.get_height() + scaled(2)
+            bx = rect.right - bw - scaled(3)
+            by = rect.top + scaled(3)
+            badge_rect = pygame.Rect(bx, by, bw, bh)
+            # Pulsing badge glow
+            badge_alpha = int(200 + 55 * math.sin(t * 2))
+            badge_color = _blend(ACCENT, HDR, badge_alpha / 255)
+            pygame.draw.rect(screen, badge_color, badge_rect, border_radius=scaled(3))
+            screen.blit(badge_surf, badge_surf.get_rect(center=badge_rect.center))
 
     draw_hint_bar(hint_text)
     pygame.display.flip()
@@ -4060,12 +4077,20 @@ def screen_memcard_picker(user):
             if moved:
                 play_sfx('navigate'); last_joy = now
 
+        # Determine which card is currently mounted
+        meta = get_user_meta(user)
+        mounted_name = meta.get("last_card", "")
+        mounted_idx = -1
+        for ci, cn in enumerate(cards):
+            if cn == mounted_name:
+                mounted_idx = ci; break
+
         # Draw
         _draw_card_grid(items, sel, start_time,
                         f"{user}'s Cards",
                         f"{len(cards)} card{'s' if len(cards) != 1 else ''}",
                         "[A] Browse   [Y] Mount   [X] Delete   [B] Back",
-                        cols=COLS)
+                        cols=COLS, mounted_index=mounted_idx)
         if _need_fade:
             fade_from_black(); _need_fade = False
         clock.tick(60)
@@ -4172,14 +4197,30 @@ def screen_save_browser(user, card):
     icon_size = max(scaled(24), icon_size)
 
     # Build icon surface cache from extracted pixel data, scaled to grid size
-    icon_surfs = {}
+    # Pre-render icon surfaces and breathing animation frames
+    BREATH_FRAMES = 60          # total frames in one breathing cycle
+    BREATH_AMP = 0.05           # 5% max scale increase
+    icon_surfs = {}             # idx -> base surface
+    icon_breath_frames = {}     # idx -> list of pre-scaled surfaces
+
     for idx, save in enumerate(all_saves):
         if save.icon_pixels and len(save.icon_pixels) == 128 * 128 * 4:
             try:
                 ico_surf = pygame.image.frombuffer(save.icon_pixels, (128, 128), 'RGBA')
                 ico_surf = pygame.transform.flip(ico_surf, False, True)  # flip vertically
-                ico_surf = pygame.transform.smoothscale(ico_surf, (icon_size, icon_size))
-                icon_surfs[idx] = ico_surf
+                ico_base = pygame.transform.smoothscale(ico_surf, (icon_size, icon_size))
+                icon_surfs[idx] = ico_base
+                # Pre-compute breathing frames for buttery-smooth animation
+                frames = []
+                for fi in range(BREATH_FRAMES):
+                    phase = fi / BREATH_FRAMES  # 0..1
+                    # Smooth ease-in-out via cosine
+                    breath = (1.0 - math.cos(phase * 2.0 * math.pi)) / 2.0
+                    sf = 1.0 + BREATH_AMP * breath
+                    fw = int(icon_size * sf)
+                    fh = int(icon_size * sf)
+                    frames.append(pygame.transform.smoothscale(ico_base, (fw, fh)))
+                icon_breath_frames[idx] = frames
             except Exception:
                 pass
 
@@ -4567,18 +4608,14 @@ def screen_save_browser(user, card):
             icon_cy = rect.top + scaled(4) + icon_area_h // 2
 
             if idx in icon_surfs:
-                ico = icon_surfs[idx]
-                iw, ih = ico.get_size()
-                # Smooth breathing scale on selected icon (ease-in-out)
-                if is_sel:
-                    breath = (math.sin(t * 1.8 - math.pi / 2) + 1.0) / 2.0
-                    s_factor = 1.0 + 0.04 * breath
-                    disp_w = int(iw * s_factor)
-                    disp_h = int(ih * s_factor)
-                    ico_disp = pygame.transform.smoothscale(ico, (disp_w, disp_h))
+                if is_sel and idx in icon_breath_frames:
+                    # Pick pre-computed frame for buttery-smooth breathing
+                    cycle_pos = (t * 0.8) % 1.0   # 0.8 = ~1.25s per full cycle
+                    frame_idx = int(cycle_pos * BREATH_FRAMES) % BREATH_FRAMES
+                    ico_disp = icon_breath_frames[idx][frame_idx]
                 else:
-                    disp_w, disp_h = iw, ih
-                    ico_disp = ico
+                    ico_disp = icon_surfs[idx]
+                disp_w, disp_h = ico_disp.get_size()
                 screen.blit(ico_disp, (icon_cx - disp_w // 2, icon_cy - disp_h // 2))
             else:
                 # Procedural fallback disc icon
