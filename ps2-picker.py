@@ -20,10 +20,10 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.5'
+VERSION = '0.1.6'
 
 # ─── Standard Library Imports ───────────────────────────────────
-import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime
+import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
 
 # Suppress pygame welcome banner and warnings before import
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
@@ -673,10 +673,12 @@ class _PS2Memcard:
 
     def _chain(self, start, limit=4096):
         chain, cur, seen = [], start, set()
-        while cur != 0xFFFFFFFF and len(chain) < limit:
-            if cur in seen: break
+        while len(chain) < limit:
+            if cur == 0xFFFFFFFF or cur in seen: break
             seen.add(cur); chain.append(cur)
-            cur = self._fat_val(cur) & 0x7FFFFFFF
+            raw = self._fat_val(cur)
+            if raw == 0xFFFFFFFF: break          # end of chain
+            cur = raw & 0x7FFFFFFF               # strip "used" bit
         return chain
 
     def _chain_data(self, start, length=None):
@@ -702,12 +704,33 @@ class _PS2Memcard:
         return entries
 
     def _parse_icon_sys(self, data):
+        """Extract display title from icon.sys, handling full-width chars."""
         if len(data) < 0xC0 + 68 or data[:4] != ICON_SYS_MAGIC: return None
-        raw = data[0xC0:0xC0+68]
-        end = raw.find(b'\x00')
-        if end >= 0: raw = raw[:end]
-        try: return raw.decode('shift_jis', errors='replace').strip()
-        except Exception: return None
+        # Title line 1 at 0xC0, line 2 at 0x104 (each 68 bytes, Shift-JIS)
+        parts = []
+        for off in (0xC0, 0x104):
+            raw = data[off:off+68]
+            end = raw.find(b'\x00')
+            if end >= 0: raw = raw[:end]
+            if not raw: continue
+            # Try Shift-JIS first, fall back to latin-1
+            for enc in ('shift_jis', 'cp1252', 'latin-1'):
+                try:
+                    text = raw.decode(enc, errors='strict')
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            else:
+                text = raw.decode('latin-1', errors='replace')
+            # Normalize full-width Latin/digits to ASCII equivalents
+            text = unicodedata.normalize('NFKC', text).strip()
+            if text:
+                parts.append(text)
+        title = ' '.join(parts) if parts else None
+        # If title is still mostly non-printable, discard it
+        if title and sum(c.isprintable() for c in title) < len(title) // 2:
+            return None
+        return title
 
     def list_saves(self):
         root = self._dirents(self._rootdir_cluster, 512)
