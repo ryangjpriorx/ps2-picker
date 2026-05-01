@@ -10,7 +10,7 @@
      python3 ps2-checker.py --skip-update Skip the update check
 """
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 
 import os, sys, platform, shutil, subprocess, importlib.util, json, string, time, math, re
 try:
@@ -134,14 +134,37 @@ def _extract_version_from_text(text):
     return m.group(1) if m else None
 
 
-def _download_file(branch, filename):
-    """Download a file from GitHub raw and return its content as string."""
+def _download_file(branch, filename, progress_cb=None):
+    """Download a file from GitHub raw and return its content as string.
+
+    Args:
+        progress_cb: Optional callback(bytes_downloaded, total_bytes_or_none)
+                     called after each chunk for progress reporting.
+    """
     if not HAS_URLLIB:
         raise RuntimeError("urllib not available")
     url = f'{GITHUB_RAW_URL}/{branch}/{filename}'
     req = urllib.request.Request(url, headers={'User-Agent': 'PS2Picker-Updater'})
     with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
-        return resp.read().decode('utf-8', errors='replace')
+        total = None
+        cl = resp.headers.get('Content-Length')
+        if cl:
+            try:
+                total = int(cl)
+            except ValueError:
+                pass
+        chunks = []
+        downloaded = 0
+        CHUNK = 8192
+        while True:
+            chunk = resp.read(CHUNK)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if progress_cb:
+                progress_cb(downloaded, total)
+        return b''.join(chunks).decode('utf-8', errors='replace')
 
 
 def check_for_updates():
@@ -212,11 +235,15 @@ def check_for_updates():
     }
 
 
-def perform_update(files_to_update=None):
+def perform_update(files_to_update=None, progress_cb=None):
     """Download and replace files that need updating.
 
     Uses pure HTTP — no git required. Downloads full file content,
     writes to a temp file, then renames atomically.
+
+    Args:
+        progress_cb: Optional callback(file_index, total_files, filename,
+                     bytes_downloaded, total_bytes_or_none) for progress.
 
     Returns:
         (success: bool, message: str)
@@ -229,12 +256,17 @@ def perform_update(files_to_update=None):
 
     updated = []
     newest_ver = None
+    total_files = len(files_to_update)
 
-    for filename in files_to_update:
+    for file_idx, filename in enumerate(files_to_update):
         local_path = os.path.join(SCRIPT_DIR, filename)
 
+        def _file_progress(dl, total, _fn=filename, _fi=file_idx):
+            if progress_cb:
+                progress_cb(_fi, total_files, _fn, dl, total)
+
         try:
-            remote_text = _download_file(channel, filename)
+            remote_text = _download_file(channel, filename, progress_cb=_file_progress)
         except Exception as e:
             return False, f'Download failed for {filename}: {e}'
 
@@ -655,7 +687,10 @@ def run_terminal_mode(check_only=False, skip_update=False):
                     print(f"  {_green('OK')}  {msg}")
                     print(f"  {_cyan('->')}  Restarting...")
                     print()
-                    os.execv(sys.executable, [sys.executable] + sys.argv + ['--skip-update'])
+                    try:
+                        os.execv(sys.executable, [sys.executable] + sys.argv + ['--skip-update'])
+                    except Exception:
+                        sys.exit(0)
                 else:
                     print(f"  {_red('X')}  {msg}")
             else:
@@ -909,15 +944,60 @@ def run_gui_mode(check_only=False, skip_update=False):
             return True, ""
         return False, f"File not found: {path_str}"
 
+    def _draw_update_progress(file_idx, total_files, filename, dl_bytes, total_bytes):
+        """Draw a progress bar and status text during update downloads."""
+        scr.fill(BG)
+
+        # Title
+        title_s = fonts['lg'].render('Updating PS2 Picker', True, HDR)
+        scr.blit(title_s, title_s.get_rect(center=(w // 2, h // 2 - sc(48))))
+
+        # File status text: "Downloading ps2-picker.py (1/2)..."
+        status_text = f'Downloading {filename} ({file_idx + 1}/{total_files})...'
+        status_s = fonts['md'].render(status_text, True, TXT)
+        scr.blit(status_s, status_s.get_rect(center=(w // 2, h // 2 - sc(20))))
+
+        # Progress bar
+        bar_w = sc(240)
+        bar_h = sc(14)
+        bar_x = w // 2 - bar_w // 2
+        bar_y = h // 2 + sc(4)
+        pygame.draw.rect(scr, BAR_BG, (bar_x, bar_y, bar_w, bar_h), border_radius=sc(4))
+
+        # Calculate fill: use byte progress within the current file,
+        # combined with which file we're on for overall position
+        if total_bytes and total_bytes > 0:
+            file_pct = min(dl_bytes / total_bytes, 1.0)
+        else:
+            # Unknown size — pulse at 80% to show activity
+            file_pct = 0.8
+        overall_pct = (file_idx + file_pct) / total_files
+        fill_w = max(sc(2), int(bar_w * overall_pct))
+        pygame.draw.rect(scr, ACCENT, (bar_x, bar_y, fill_w, bar_h), border_radius=sc(4))
+
+        # Bytes text below bar
+        if total_bytes and total_bytes > 0:
+            byte_text = f'{dl_bytes // 1024} / {total_bytes // 1024} KB'
+        else:
+            byte_text = f'{dl_bytes // 1024} KB'
+        byte_s = fonts['sm'].render(byte_text, True, TXT_DIM)
+        scr.blit(byte_s, byte_s.get_rect(center=(w // 2, bar_y + bar_h + sc(12))))
+
+        pygame.display.flip()
+        # Pump events so the OS doesn't think we're frozen
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+
     def _do_update():
         nonlocal update_status, update_msg
         files = update_info.get('files_to_update', UPDATE_FILES) if update_info else UPDATE_FILES
         update_status = 'updating'
-        scr.fill(BG)
-        upd_surf = fonts['lg'].render('Downloading updates...', True, HINT)
-        scr.blit(upd_surf, upd_surf.get_rect(center=(w // 2, h // 2)))
-        pygame.display.flip()
-        ok, msg = perform_update(files)
+
+        # Draw initial state before download starts
+        _draw_update_progress(0, len(files), files[0], 0, None)
+
+        ok, msg = perform_update(files, progress_cb=_draw_update_progress)
         update_msg = msg
         if ok:
             update_status = 'done'
@@ -932,7 +1012,10 @@ def run_gui_mode(check_only=False, skip_update=False):
             pygame.display.flip()
             time.sleep(2)
             pygame.quit()
-            os.execv(sys.executable, [sys.executable] + sys.argv + ['--skip-update'])
+            try:
+                os.execv(sys.executable, [sys.executable] + sys.argv + ['--skip-update'])
+            except Exception:
+                sys.exit(0)
         else:
             update_status = 'failed'
 

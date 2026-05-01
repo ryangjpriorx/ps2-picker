@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 
 # ─── Update Channel ─────────────────────────────────────────────
 # 0 = stable (pulls from main branch)
