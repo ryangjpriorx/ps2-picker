@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.0.13'
+VERSION = '0.0.14'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
@@ -130,12 +130,22 @@ def needs_first_time_setup():
 
 
 def reload_games():
-    """Refresh the game list from active config rom_dir. Cached games sort to top."""
+    """Refresh the game list from active config rom_dir. Cached games sort to top.
+    Also purges stale manifest entries whose cache dirs no longer exist."""
     global games
+    # Purge stale cache entries first
+    manifest = load_cache_manifest()
+    stale = [k for k, v in manifest.items()
+             if not os.path.isdir(v.get("path", ""))]
+    if stale:
+        for k in stale:
+            del manifest[k]
+        save_cache_manifest(manifest)
+
     rom_dir = active_cfg.get("rom_dir", "")
     if rom_dir and os.path.isdir(rom_dir):
         all_games = [f for f in os.listdir(rom_dir) if f.lower().endswith(EXTS)]
-        cached_keys = set(load_cache_manifest().keys())
+        cached_keys = set(manifest.keys())
         games = sorted(
             all_games,
             key=lambda f: (0 if strip_ext(f) in cached_keys else 1, f.lower())
@@ -697,10 +707,14 @@ def draw_list(items, sel_idx, scroll, colors=None):
     """Draw a scrollable list. items = list of (text, is_special) tuples."""
     top = scaled(50)
     vis = VISIBLE
-    for i in range(scroll, min(scroll + vis, len(items))):
+    total = len(items)
+    icon_w = scaled(20)  # reserve space for ⚡ icon
+    text_max = W - scaled(40) - icon_w  # text area excludes icon column
+
+    for i in range(scroll, min(scroll + vis, total)):
         y = top + (i - scroll) * LINE_H
         text, special = items[i]
-        display = truncate(text, F['md'], W - scaled(30))
+        display = truncate(text, F['md'], text_max)
         if i == sel_idx:
             bg = DANGER if (colors and colors.get(i) == 'danger') else SEL_BG
             pygame.draw.rect(screen, bg, (scaled(6), y, W - scaled(12), LINE_H - 2), border_radius=scaled(4))
@@ -713,7 +727,17 @@ def draw_list(items, sel_idx, scroll, colors=None):
         # Cached indicator
         if special:
             tag = F['sm'].render("\u26A1", True, SUCCESS)
-            screen.blit(tag, (W - scaled(22), y + scaled(3)))
+            screen.blit(tag, (W - scaled(26), y + scaled(3)))
+
+    # Scroll indicator (right edge)
+    if total > vis and vis > 0:
+        track_top = top
+        track_h = vis * LINE_H
+        thumb_h = max(scaled(12), int(track_h * vis / total))
+        thumb_y = track_top + int((track_h - thumb_h) * scroll / max(1, total - vis))
+        bar_x = W - scaled(4)
+        pygame.draw.rect(screen, BAR_BG, (bar_x, track_top, scaled(3), track_h), border_radius=1)
+        pygame.draw.rect(screen, ACCENT, (bar_x, thumb_y, scaled(3), thumb_h), border_radius=1)
 
 
 def draw_center_msg(top_text, mid_text="", bot_text=""):
@@ -2508,6 +2532,15 @@ def evict_cached_picker():
     """Interactive picker to choose which cached game to remove when cache is full."""
     max_cached = active_cfg.get("max_cached_games", 3)
     manifest = load_cache_manifest()
+
+    # Purge stale entries (cache dir deleted from disk)
+    stale = [k for k, v in manifest.items()
+             if not os.path.isdir(v.get("path", ""))]
+    for k in stale:
+        del manifest[k]
+    if stale:
+        save_cache_manifest(manifest)
+
     if len(manifest) < max_cached:
         return True
 
@@ -2992,7 +3025,8 @@ def screen_game_picker(user, card):
                 if ev.key in (pygame.K_RETURN, pygame.K_SPACE) and filtered:
                     play_sfx('launch')
                     result = extract_and_launch(filtered[sel], user, card)
-                    cached_keys = set(load_cache_manifest().keys())
+                    reload_games(); cached_keys = set(load_cache_manifest().keys())
+                    sel = min(sel, max(0, len(games) - 1))
                     if result:
                         return True
                 if ev.key == pygame.K_F1:
@@ -3002,7 +3036,8 @@ def screen_game_picker(user, card):
                 if ev.button == BTN["confirm"] and filtered:  # A = launch
                     play_sfx('launch')
                     result = extract_and_launch(filtered[sel], user, card)
-                    cached_keys = set(load_cache_manifest().keys())
+                    reload_games(); cached_keys = set(load_cache_manifest().keys())
+                    sel = min(sel, max(0, len(games) - 1))
                     if result:
                         return True
                 if ev.button == BTN["back"]:  # B = back
@@ -3053,7 +3088,7 @@ def screen_game_picker(user, card):
                      f"{len(filtered)} game{'s' if len(filtered) != 1 else ''}")
 
         if filtered:
-            items_display = [(truncate(strip_ext(g), F['md'], W - scaled(60)),
+            items_display = [(strip_ext(g),
                               strip_ext(g) in cached_keys) for g in filtered]
             draw_list(items_display, sel, scroll)
 
