@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.26'
+VERSION = '0.1.27'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -60,8 +60,8 @@ DEFAULT_CONFIG = {
     "core_path": "",                                     # RetroArch PS2 core (.so/.dll)
     "volume": 0.5,                                       # UI sound volume (0.0–1.0)
     "muted": False,                                      # Global mute toggle
+    "update_channel": 0,                                  # 0 = stable (main), 1 = testing
     "setup_complete": False,                              # First-time wizard completed?
-    "update_channel": 0,                              # 0 = stable/main, 1 = testing
 }
 
 # ═══ Configuration System ══════════════════════════════════════
@@ -1315,17 +1315,20 @@ def confirm_dialog(message):
                 last_joy = now
 
         screen.fill(BG)
-        # Render message lines (supports \n for multi-line)
+        # Multi-line message rendering (split on \n)
         lines = message.split('\n')
-        line_h = F['lg'].get_linesize() + scaled(4)
-        total_text_h = len(lines) * line_h
-        text_top = H // 3 - total_text_h // 2
-        for li, line in enumerate(lines):
-            line_font = F['lg'] if li == 0 else F['md']
-            line_color = HDR if li == 0 else TXT_DIM
-            display_line = truncate(line.strip(), line_font, W - scaled(40))
-            ls = line_font.render(display_line, True, line_color)
-            screen.blit(ls, ls.get_rect(center=(W // 2, text_top + li * line_h)))
+        line_y = H // 3
+        for li, line_text in enumerate(lines):
+            if li == 0:
+                font = F['lg']
+                color = HDR
+            else:
+                font = F['md']
+                color = TXT_DIM
+            display_line = truncate(line_text, font, W - scaled(40))
+            ls = font.render(display_line, True, color)
+            screen.blit(ls, ls.get_rect(center=(W // 2, line_y)))
+            line_y += ls.get_height() + scaled(6)
         for i, label in enumerate(["Yes", "No"]):
             bx = W // 2 + (i * scaled(120) - scaled(60))
             rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
@@ -2190,7 +2193,7 @@ def settings_menu(username=None):
                 ch_color = (220, 160, 50) if ch_val == 1 else SUCCESS
                 ch_surf = F['sm'].render(ch_label, True, ch_color if is_sel else TXT_DIM)
                 screen.blit(ch_surf, (rect.right - ch_surf.get_width() - scaled(12),
-                                      rect.y + (scaled(38) - ch_surf.get_height()) // 2))
+                                      rect.y + scaled(38) // 2 - ch_surf.get_height() // 2))
             elif key in ("theme", "controller_map", "cache_manager"):
                 # Show a chevron to indicate submenu
                 if key == "cache_manager":
@@ -3683,6 +3686,40 @@ MENU_ICONS = [
 ]
 
 
+def _is_l2_held():
+    """Check if L2 trigger is currently held (axis 4 > 0.5 or button 6)."""
+    if joy is None:
+        return False
+    try:
+        # Most controllers: L2 is axis 4 (range -1 to 1, resting at -1 or 0)
+        if joy.get_numaxes() > 4 and joy.get_axis(4) > 0.5:
+            return True
+        # Fallback: some controllers map L2 to button 6
+        if joy.get_numbuttons() > 6 and joy.get_button(6):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _launch_ps2_bios():
+    """Launch RetroArch with the PS2 core but no ROM (BIOS boot)."""
+    core = active_cfg.get("core_path", "")
+    if not core or not os.path.exists(core):
+        play_sfx('error')
+        draw_center_msg("Error", "PS2 core not found!", "Set it in Settings first.")
+        _wait_any_button()
+        return
+    ra = _find_retroarch()
+    cmd = [ra, "-L", core]
+    try:
+        subprocess.run(cmd)
+    except Exception as e:
+        play_sfx('error')
+        draw_center_msg("Launch Error", str(e)[:60], "Press any button")
+        _wait_any_button()
+
+
 # ═══ Screen: Main Menu ═════════════════════════════════════════
 
 def screen_main_menu():
@@ -3719,9 +3756,12 @@ def screen_main_menu():
                     sel_col = min(COLS - 1, sel_col + 1); play_sfx('navigate')
                 elif ev.key in (pygame.K_RETURN, pygame.K_SPACE):
                     idx = sel_row * COLS + sel_col
+                    choice_name = MENU_ICONS[idx][0]
+                    if choice_name == "Memory Cards" and _is_l2_held():
+                        choice_name = "Memory Cards+BIOS"
                     play_sfx('select')
                     fade_to_black()
-                    return MENU_ICONS[idx][0]
+                    return choice_name
                 elif ev.key == pygame.K_ESCAPE:
                     play_sfx('back')
                     fade_to_black()
@@ -3729,9 +3769,12 @@ def screen_main_menu():
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == BTN["confirm"]:
                     idx = sel_row * COLS + sel_col
+                    choice_name = MENU_ICONS[idx][0]
+                    if choice_name == "Memory Cards" and _is_l2_held():
+                        choice_name = "Memory Cards+BIOS"
                     play_sfx('select')
                     fade_to_black()
-                    return MENU_ICONS[idx][0]
+                    return choice_name
                 elif ev.button == BTN["back"]:
                     play_sfx('back')
                     fade_to_black()
@@ -5208,6 +5251,15 @@ def main():
                     else:
                         break  # back to card picker
 
+        elif choice == "Memory Cards+BIOS":
+            # L2 was held — confirm then boot straight to PS2 BIOS
+            if confirm_dialog("Boot to PS2 BIOS?\nThis will launch RetroArch without a game."):
+                fade_to_black()
+                _launch_ps2_bios()
+                screen, W, H, F, joy = init_display()
+                init_sounds()
+                apply_volume()
+
         elif choice == "Memory Cards":
             # Card management directly
             screen_memcard_picker(user)
@@ -5226,7 +5278,6 @@ def main():
         elif choice == "Exit":
             if confirm_dialog("Exit PS2 Picker?"):
                 pygame.quit(); sys.exit()
-
 
 
 # ═══ Entry Point ═══════════════════════════════════════════════

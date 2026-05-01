@@ -10,7 +10,7 @@
      python3 ps2-checker.py --skip-update Skip the update check
 """
 
-VERSION = '0.1.26'
+VERSION = '0.1.27'
 
 import os, sys, platform, shutil, subprocess, importlib.util, json, string, time, math, re
 try:
