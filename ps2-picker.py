@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.0.15'
+VERSION = '0.0.16'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
@@ -703,16 +703,28 @@ def draw_header(title, hint_text=None, count_text=None):
     pygame.draw.line(screen, ACCENT, (scaled(10), scaled(46)), (W - scaled(10), scaled(46)), 1)
 
 
-def draw_list(items, sel_idx, scroll, colors=None):
-    """Draw a scrollable list. items = list of (text, is_special) tuples."""
+def draw_list(items, sel_idx, scroll, colors=None, smooth_offset=0.0):
+    """Draw a scrollable list with optional smooth scroll offset.
+    items = list of (text, is_special) tuples.
+    smooth_offset = fractional row offset for lerp scrolling (0.0 = aligned)."""
     top = scaled(50)
     vis = VISIBLE
     total = len(items)
     icon_w = scaled(20)  # reserve space for ⚡ icon
     text_max = W - scaled(40) - icon_w  # text area excludes icon column
+    pixel_offset = int(smooth_offset * LINE_H)
 
-    for i in range(scroll, min(scroll + vis, total)):
-        y = top + (i - scroll) * LINE_H
+    # Clip to list area
+    list_rect = pygame.Rect(0, top, W, vis * LINE_H)
+    screen.set_clip(list_rect)
+
+    # Draw one extra row above and below for smooth scrolling
+    start = max(0, scroll - 1)
+    end = min(total, scroll + vis + 2)
+    for i in range(start, end):
+        y = top + (i - scroll) * LINE_H - pixel_offset
+        if y + LINE_H < top or y > top + vis * LINE_H:
+            continue
         text, special = items[i]
         display = truncate(text, F['md'], text_max)
         if i == sel_idx:
@@ -729,12 +741,15 @@ def draw_list(items, sel_idx, scroll, colors=None):
             tag = F['sm'].render("\u26A1", True, SUCCESS)
             screen.blit(tag, (W - scaled(26), y + scaled(3)))
 
+    screen.set_clip(None)
+
     # Scroll indicator (right edge)
     if total > vis and vis > 0:
+        scroll_frac = (scroll + smooth_offset) / max(1, total - vis)
         track_top = top
         track_h = vis * LINE_H
         thumb_h = max(scaled(12), int(track_h * vis / total))
-        thumb_y = track_top + int((track_h - thumb_h) * scroll / max(1, total - vis))
+        thumb_y = track_top + int((track_h - thumb_h) * scroll_frac)
         bar_x = W - scaled(4)
         pygame.draw.rect(screen, BAR_BG, (bar_x, track_top, scaled(3), track_h), border_radius=1)
         pygame.draw.rect(screen, ACCENT, (bar_x, thumb_y, scaled(3), thumb_h), border_radius=1)
@@ -796,6 +811,35 @@ def draw_toast(msg, color=SUCCESS, duration=1.2):
         screen.blit(ts, ts.get_rect(center=(W // 2, H - toast_h // 2)))
         pygame.display.flip()
         clock.tick(30)
+
+
+def fade_to_black(duration=0.12):
+    """Fade current screen content to black."""
+    snapshot = screen.copy()
+    steps = max(1, int(duration * 60))
+    for i in range(1, steps + 1):
+        t = i / steps
+        screen.blit(snapshot, (0, 0))
+        overlay = pygame.Surface((W, H))
+        overlay.fill((0, 0, 0))
+        overlay.set_alpha(int(255 * t))
+        screen.blit(overlay, (0, 0))
+        pygame.display.flip()
+        clock.tick(60)
+
+
+def fade_from_black(duration=0.12):
+    """Fade from black to whatever is currently drawn on screen."""
+    snapshot = screen.copy()
+    steps = max(1, int(duration * 60))
+    for i in range(1, steps + 1):
+        t = i / steps
+        screen.fill((0, 0, 0))
+        snapshot.set_alpha(int(255 * t))
+        screen.blit(snapshot, (0, 0))
+        pygame.display.flip()
+        clock.tick(60)
+    snapshot.set_alpha(255)  # reset
 
 
 def _wait_any_button():
@@ -1723,12 +1767,14 @@ def first_time_setup():
 
 def settings_menu(username=None):
     """Settings menu accessible from game picker. Edits per-user or global settings."""
+    _need_fade = True
     items = [
         ("Volume", "volume"),
         ("ROM Folder", "rom_dir"),
         ("RetroArch Core", "core_path"),
         ("Cache Folder", "local_cache_dir"),
         ("Max Cached Games", "max_cached_games"),
+        ("Manage Cache", "cache_manager"),
         ("Theme Colors", "theme"),
         ("Controller Mapping", "controller_map"),
         ("Back", "back"),
@@ -1739,6 +1785,7 @@ def settings_menu(username=None):
         "core_path":       "Path to the PCSX2 RetroArch core (.so or .dll)",
         "local_cache_dir": "Where extracted games are stored for faster loading",
         "max_cached_games":"Number of extracted games to keep before oldest is removed (1-20)",
+        "cache_manager":   "View and delete cached games to free up disk space",
         "theme":           "Choose a color preset or create your own custom theme",
         "controller_map":  "Remap controller buttons for all menu actions",
         "back":            "Return to the game list",
@@ -1753,7 +1800,7 @@ def settings_menu(username=None):
                 pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); return
+                    play_sfx('back'); fade_to_black(); return
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN:
@@ -1768,9 +1815,9 @@ def settings_menu(username=None):
                     play_sfx('select')
                     _handle_setting(items[sel][1], username)
                     if items[sel][1] == "back":
-                        return
+                        fade_to_black(); return
                 if ev.button == BTN["back"]:
-                    play_sfx('back'); return
+                    play_sfx('back'); fade_to_black(); return
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
@@ -1817,8 +1864,13 @@ def settings_menu(username=None):
                     val_str = truncate(str(val), F['sm'], W // 2 - scaled(20)) if val else "(not set)"
                 vs = F['sm'].render(val_str, True, ACCENT if is_sel else TXT_DIM)
                 screen.blit(vs, (rect.right - vs.get_width() - scaled(12), rect.y + scaled(10)))
-            elif key in ("theme", "controller_map"):
+            elif key in ("theme", "controller_map", "cache_manager"):
                 # Show a chevron to indicate submenu
+                if key == "cache_manager":
+                    manifest = load_cache_manifest()
+                    count = len(manifest)
+                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}", True, ACCENT if is_sel else TXT_DIM)
+                    screen.blit(info, (rect.right - info.get_width() - scaled(28), rect.y + scaled(10)))
                 chev = F['md'].render("\u203A", True, ACCENT if is_sel else TXT_DIM)
                 screen.blit(chev, (rect.right - chev.get_width() - scaled(12), rect.y + scaled(4)))
 
@@ -1830,6 +1882,8 @@ def settings_menu(username=None):
             hint += "  (per-user)"
         draw_hint_bar(hint)
         pygame.display.flip()
+        if _need_fade:
+            fade_from_black(); _need_fade = False
         clock.tick(30)
 
 
@@ -2488,6 +2542,9 @@ def _handle_setting(key, username=None):
     elif key == "theme":
         theme_submenu()
         return  # Theme saves itself directly to global config
+    elif key == "cache_manager":
+        cache_manager_screen()
+        return
     elif key == "controller_map":
         controller_mapping_submenu()
         return  # Mapping saves itself directly to global config
@@ -2526,6 +2583,205 @@ def save_cache_manifest(manifest):
     os.makedirs(cache_dir, exist_ok=True)
     with open(os.path.join(cache_dir, "manifest.json"), 'w') as f:
         json.dump(manifest, f, indent=2)
+
+
+def cache_manager_screen():
+    """Dedicated cache manager — view and delete cached games."""
+    manifest = load_cache_manifest()
+
+    # Purge stale entries
+    stale = [k for k, v in manifest.items()
+             if not os.path.isdir(v.get("path", ""))]
+    for k in stale:
+        del manifest[k]
+    if stale:
+        save_cache_manifest(manifest)
+
+    sel = 0
+    scroll = 0
+    VIS = max(1, (H - scaled(110)) // scaled(50))
+    last_joy = 0
+
+    while True:
+        now = time.time()
+        # Rebuild sorted entries each frame (list may shrink after deletion)
+        entries = sorted(manifest.keys(),
+                         key=lambda k: manifest[k].get("last_used", 0), reverse=True)
+        total = len(entries)
+
+        # Calculate total cache size
+        total_bytes = 0
+        for v in manifest.values():
+            p = v.get("path", "")
+            if os.path.isdir(p):
+                for dirpath, _, filenames in os.walk(p):
+                    for fn in filenames:
+                        try:
+                            total_bytes += os.path.getsize(os.path.join(dirpath, fn))
+                        except OSError:
+                            pass
+
+        if total_bytes >= 1 << 30:
+            size_str = f"{total_bytes / (1 << 30):.1f} GB"
+        elif total_bytes >= 1 << 20:
+            size_str = f"{total_bytes / (1 << 20):.0f} MB"
+        else:
+            size_str = f"{total_bytes / (1 << 10):.0f} KB"
+
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    play_sfx('back'); return
+                if ev.key == pygame.K_UP and total:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if ev.key == pygame.K_DOWN and total:
+                    sel = min(total - 1, sel + 1); play_sfx('navigate')
+                if ev.key in (pygame.K_RETURN, pygame.K_SPACE) and total:
+                    play_sfx('select')
+                    name = entries[sel]
+                    if confirm_dialog(f"Delete {name}?"):
+                        cache_path = manifest[name].get("path", "")
+                        if os.path.isdir(cache_path):
+                            shutil.rmtree(cache_path, ignore_errors=True)
+                        del manifest[name]
+                        save_cache_manifest(manifest)
+                        reload_games()
+                        play_sfx('select')
+                        sel = min(sel, max(0, len(manifest) - 1))
+                if ev.key == pygame.K_DELETE and total:
+                    # Delete all
+                    if confirm_dialog("Delete ALL cached games?"):
+                        for name in list(manifest.keys()):
+                            cache_path = manifest[name].get("path", "")
+                            if os.path.isdir(cache_path):
+                                shutil.rmtree(cache_path, ignore_errors=True)
+                        manifest.clear()
+                        save_cache_manifest(manifest)
+                        reload_games()
+                        sel = 0; scroll = 0
+                        play_sfx('select')
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == BTN["confirm"] and total:
+                    play_sfx('select')
+                    name = entries[sel]
+                    if confirm_dialog(f"Delete {name}?"):
+                        cache_path = manifest[name].get("path", "")
+                        if os.path.isdir(cache_path):
+                            shutil.rmtree(cache_path, ignore_errors=True)
+                        del manifest[name]
+                        save_cache_manifest(manifest)
+                        reload_games()
+                        play_sfx('select')
+                        sel = min(sel, max(0, len(manifest) - 1))
+                if ev.button == BTN["back"]:
+                    play_sfx('back'); return
+                if ev.button == BTN["alt"] and total:  # Y = delete all
+                    if confirm_dialog("Delete ALL cached games?"):
+                        for name in list(manifest.keys()):
+                            cache_path = manifest[name].get("path", "")
+                            if os.path.isdir(cache_path):
+                                shutil.rmtree(cache_path, ignore_errors=True)
+                        manifest.clear()
+                        save_cache_manifest(manifest)
+                        reload_games()
+                        sel = 0; scroll = 0
+                        play_sfx('select')
+            if ev.type == pygame.JOYHATMOTION and total:
+                hx, hy = ev.value
+                if hy == 1:
+                    sel = max(0, sel - 1); play_sfx('navigate')
+                if hy == -1:
+                    sel = min(total - 1, sel + 1); play_sfx('navigate')
+
+        if joy is not None and total and now - last_joy > DPAD_DELAY / 1000:
+            moved = False
+            ya = joy.get_axis(1)
+            if ya < -0.5:
+                sel = max(0, sel - 1); moved = True
+            elif ya > 0.5:
+                sel = min(total - 1, sel + 1); moved = True
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        if sel < scroll:
+            scroll = sel
+        if sel >= scroll + VIS:
+            scroll = sel - VIS + 1
+
+        # ─── Draw ───
+        screen.fill(BG)
+        max_cached = active_cfg.get("max_cached_games", 3)
+        draw_header("Cache Manager", f"{total}/{max_cached} slots \u2022 {size_str}")
+
+        if total == 0:
+            empty = F['md'].render("No cached games", True, TXT_DIM)
+            screen.blit(empty, empty.get_rect(center=(W // 2, H // 2)))
+        else:
+            y = scaled(55)
+            for i in range(scroll, min(scroll + VIS, total)):
+                name = entries[i]
+                is_sel = (i == sel)
+                rect = pygame.Rect(scaled(12), y, W - scaled(24), scaled(44))
+                if is_sel:
+                    pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+                pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
+
+                # Game name
+                label = F['md_b' if is_sel else 'md'].render(
+                    truncate(name, F['md'], W - scaled(140)),
+                    True, TXT_SEL if is_sel else TXT)
+                screen.blit(label, (rect.x + scaled(10), rect.y + scaled(4)))
+
+                # Size + age on second line
+                entry = manifest[name]
+                entry_path = entry.get("path", "")
+                entry_size = 0
+                if os.path.isdir(entry_path):
+                    for dp, _, fns in os.walk(entry_path):
+                        for fn in fns:
+                            try:
+                                entry_size += os.path.getsize(os.path.join(dp, fn))
+                            except OSError:
+                                pass
+                if entry_size >= 1 << 30:
+                    es = f"{entry_size / (1 << 30):.1f}GB"
+                elif entry_size >= 1 << 20:
+                    es = f"{entry_size / (1 << 20):.0f}MB"
+                else:
+                    es = f"{entry_size / (1 << 10):.0f}KB"
+
+                last_used = entry.get("last_used", 0)
+                if last_used > 0:
+                    age = time.time() - last_used
+                    if age < 3600:
+                        age_str = f"{int(age / 60)}m ago"
+                    elif age < 86400:
+                        age_str = f"{int(age / 3600)}h ago"
+                    else:
+                        age_str = f"{int(age / 86400)}d ago"
+                else:
+                    age_str = "never"
+                detail = F['sm'].render(f"{es} \u2022 {age_str}", True, ACCENT if is_sel else TXT_DIM)
+                screen.blit(detail, (rect.x + scaled(10), rect.y + scaled(26)))
+
+                y += scaled(50)
+
+            # Scroll indicator
+            if total > VIS:
+                track_top = scaled(55)
+                track_h = VIS * scaled(50)
+                thumb_h = max(scaled(12), int(track_h * VIS / total))
+                thumb_y = track_top + int((track_h - thumb_h) * scroll / max(1, total - VIS))
+                bar_x = W - scaled(4)
+                pygame.draw.rect(screen, BAR_BG, (bar_x, track_top, scaled(3), track_h), border_radius=1)
+                pygame.draw.rect(screen, ACCENT, (bar_x, thumb_y, scaled(3), thumb_h), border_radius=1)
+
+        hints = "[A] Delete   [Y] Clear All   [B] Back" if total else "[B] Back"
+        draw_hint_bar(hints)
+        pygame.display.flip()
+        clock.tick(30)
 
 
 def evict_cached_picker():
@@ -2805,6 +3061,7 @@ def screen_user_picker():
     sel = 0
     scroll = 0
     last_joy = 0
+    _need_fade = True
 
     while True:
         users = get_users()
@@ -2817,7 +3074,7 @@ def screen_user_picker():
                 pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); return None
+                    play_sfx('back'); fade_to_black(); return None
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN:
@@ -2830,9 +3087,9 @@ def screen_user_picker():
                             name = name.strip()
                             if name not in users:
                                 create_user(name)
-                            return name
+                            fade_to_black(); return name
                     else:
-                        play_sfx('select'); return users[sel]
+                        play_sfx('select'); fade_to_black(); return users[sel]
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == BTN["confirm"]:
                     if sel == len(items) - 1:
@@ -2842,11 +3099,11 @@ def screen_user_picker():
                             name = name.strip()
                             if name not in users:
                                 create_user(name)
-                            return name
+                            fade_to_black(); return name
                     else:
-                        play_sfx('select'); return users[sel]
+                        play_sfx('select'); fade_to_black(); return users[sel]
                 if ev.button == BTN["back"]:
-                    play_sfx('back'); return None
+                    play_sfx('back'); fade_to_black(); return None
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hy == 1:
@@ -2876,6 +3133,8 @@ def screen_user_picker():
 
         draw_hint_bar("[A] Select   [B] Exit")
         pygame.display.flip()
+        if _need_fade:
+            fade_from_black(); _need_fade = False
         clock.tick(30)
 
 
@@ -2886,6 +3145,7 @@ def screen_memcard_picker(user):
     sel = 0
     scroll = 0
     last_joy = 0
+    _need_fade = True
 
     while True:
         cards = get_cards(user)
@@ -2898,7 +3158,7 @@ def screen_memcard_picker(user):
                 pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); return None
+                    play_sfx('back'); fade_to_black(); return None
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN:
@@ -2910,7 +3170,7 @@ def screen_memcard_picker(user):
                         if name:
                             create_card(user, name)
                     elif sel < len(cards):
-                        play_sfx('select'); return cards[sel]
+                        play_sfx('select'); fade_to_black(); return cards[sel]
                 if ev.key == pygame.K_DELETE or ev.key == pygame.K_x:
                     if sel < len(cards) and len(cards) > 1:
                         if confirm_dialog(f"Delete {cards[sel]}?"):
@@ -2924,9 +3184,9 @@ def screen_memcard_picker(user):
                         if name:
                             create_card(user, name)
                     elif sel < len(cards):
-                        play_sfx('select'); return cards[sel]
+                        play_sfx('select'); fade_to_black(); return cards[sel]
                 if ev.button == BTN["back"]:
-                    play_sfx('back'); return None
+                    play_sfx('back'); fade_to_black(); return None
                 if ev.button == BTN["extra"] and sel < len(cards) and len(cards) > 1:
                     if confirm_dialog(f"Delete {cards[sel]}?"):
                         play_sfx('select')
@@ -2960,6 +3220,8 @@ def screen_memcard_picker(user):
 
         draw_hint_bar("[A] Select   [B] Back   [X] Delete card")
         pygame.display.flip()
+        if _need_fade:
+            fade_from_black(); _need_fade = False
         clock.tick(30)
 
 
@@ -2970,8 +3232,10 @@ def screen_game_picker(user, card):
     global joy
     sel = 0
     scroll = 0
+    smooth_scroll = 0.0  # visual scroll offset for lerp
     last_joy_time = 0
     search_text = ""
+    _need_fade = True
     # Cache the manifest lookup so we don't hit disk every frame
     cached_keys = set(load_cache_manifest().keys())
 
@@ -2996,12 +3260,12 @@ def screen_game_picker(user, card):
                 if ev.type == pygame.QUIT:
                     pygame.quit(); sys.exit()
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); return False
+                    play_sfx('back'); fade_to_black(); return False
                 if ev.type == pygame.JOYBUTTONDOWN:
                     if ev.button == BTN["back"]:
-                        play_sfx('back'); return False
+                        play_sfx('back'); fade_to_black(); return False
                     if ev.button == BTN["start"]:
-                        play_sfx('select'); settings_menu(user); reload_games()
+                        play_sfx('select'); fade_to_black(); settings_menu(user); reload_games(); _need_fade = True
             clock.tick(30)
             continue
 
@@ -3013,7 +3277,7 @@ def screen_game_picker(user, card):
                 pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    play_sfx('back'); return False
+                    play_sfx('back'); fade_to_black(); return False
                 if ev.key == pygame.K_UP:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if ev.key == pygame.K_DOWN and filtered:
@@ -3030,8 +3294,8 @@ def screen_game_picker(user, card):
                     if result:
                         return True
                 if ev.key == pygame.K_F1:
-                    play_sfx('select'); settings_menu(user); reload_games()
-                    cached_keys = set(load_cache_manifest().keys())
+                    play_sfx('select'); fade_to_black(); settings_menu(user); reload_games()
+                    cached_keys = set(load_cache_manifest().keys()); _need_fade = True
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == BTN["confirm"] and filtered:  # A = launch
                     play_sfx('launch')
@@ -3041,10 +3305,10 @@ def screen_game_picker(user, card):
                     if result:
                         return True
                 if ev.button == BTN["back"]:  # B = back
-                    play_sfx('back'); return False
+                    play_sfx('back'); fade_to_black(); return False
                 if ev.button == BTN["start"]:  # Start = settings
-                    play_sfx('select'); settings_menu(user); reload_games()
-                    cached_keys = set(load_cache_manifest().keys())
+                    play_sfx('select'); fade_to_black(); settings_menu(user); reload_games()
+                    cached_keys = set(load_cache_manifest().keys()); _need_fade = True
                 if ev.button == BTN["select"]:  # Select = search
                     play_sfx('select')
                     q = on_screen_keyboard("Search Games")
@@ -3081,6 +3345,17 @@ def screen_game_picker(user, card):
         if sel >= scroll + VISIBLE:
             scroll = sel - VISIBLE + 1
 
+        # Smooth scroll lerp — visual offset chases logical scroll
+        target = float(scroll)
+        if abs(smooth_scroll - target) > 0.01:
+            smooth_scroll += (target - smooth_scroll) * 0.25
+            if abs(smooth_scroll - target) < 0.01:
+                smooth_scroll = target
+        else:
+            smooth_scroll = target
+        frac = smooth_scroll - int(smooth_scroll)
+        vis_scroll = int(smooth_scroll)
+
         screen.fill(BG)
         title = f"Games - {user} / {card}"
         search_hint = f" (filter: {search_text})" if search_text else ""
@@ -3090,10 +3365,12 @@ def screen_game_picker(user, card):
         if filtered:
             items_display = [(strip_ext(g),
                               strip_ext(g) in cached_keys) for g in filtered]
-            draw_list(items_display, sel, scroll)
+            draw_list(items_display, sel, vis_scroll, smooth_offset=frac)
 
         draw_hint_bar("[A] Launch   [B] Back   [Start] Settings   [Select] Search")
         pygame.display.flip()
+        if _need_fade:
+            fade_from_black(); _need_fade = False
         clock.tick(30)
 
 
