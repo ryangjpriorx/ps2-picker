@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.6'
+VERSION = '0.1.7'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -573,10 +573,11 @@ DIRENT_SIZE = 512
 
 class PS2Save:
     """One game save directory on the memory card."""
-    __slots__ = ('name', 'title', 'size', 'file_count', 'modified', 'files')
-    def __init__(self, name, title, size, file_count, modified, files):
+    __slots__ = ('name', 'title', 'size', 'file_count', 'modified', 'files', 'icon_pixels')
+    def __init__(self, name, title, size, file_count, modified, files, icon_pixels=None):
         self.name = name; self.title = title; self.size = size
-        self.file_count = file_count; self.modified = modified; self.files = files
+        self.file_count = file_count; self.modified = modified
+        self.files = files; self.icon_pixels = icon_pixels
 
 
 def _mc_u16(data, off):
@@ -704,33 +705,90 @@ class _PS2Memcard:
         return entries
 
     def _parse_icon_sys(self, data):
-        """Extract display title from icon.sys, handling full-width chars."""
-        if len(data) < 0xC0 + 68 or data[:4] != ICON_SYS_MAGIC: return None
-        # Title line 1 at 0xC0, line 2 at 0x104 (each 68 bytes, Shift-JIS)
+        """Extract display title and icon filename from icon.sys.
+
+        icon.sys layout:
+          0x00    4   Magic 'PS2D'
+          0x06    2   Line-break position (character offset)
+          0xC0   68   Title (Shift-JIS, may contain two null-separated lines)
+          0x104  64   Normal icon filename (ASCII, null-terminated)
+
+        Returns (title_str, icon_filename_str) or (None, None).
+        """
+        if len(data) < 0x148 or data[:4] != ICON_SYS_MAGIC:
+            return None, None
+
+        # ── Title: read 68 bytes at 0xC0, split on nulls for multi-line ──
+        title_raw = data[0xC0:0xC0 + 68]
+        # Split on null bytes to get all title line segments
+        segments = title_raw.split(b'\x00')
         parts = []
-        for off in (0xC0, 0x104):
-            raw = data[off:off+68]
-            end = raw.find(b'\x00')
-            if end >= 0: raw = raw[:end]
-            if not raw: continue
+        for seg in segments:
+            if not seg: continue
             # Try Shift-JIS first, fall back to latin-1
             for enc in ('shift_jis', 'cp1252', 'latin-1'):
                 try:
-                    text = raw.decode(enc, errors='strict')
+                    text = seg.decode(enc, errors='strict')
                     break
                 except (UnicodeDecodeError, LookupError):
                     continue
             else:
-                text = raw.decode('latin-1', errors='replace')
+                text = seg.decode('latin-1', errors='replace')
             # Normalize full-width Latin/digits to ASCII equivalents
             text = unicodedata.normalize('NFKC', text).strip()
+            # Filter to only printable characters
+            text = ''.join(c for c in text if c.isprintable())
             if text:
                 parts.append(text)
-        title = ' '.join(parts) if parts else None
-        # If title is still mostly non-printable, discard it
+        title = ' - '.join(parts) if parts else None
+
+        # If title is still mostly non-printable or empty, discard
         if title and sum(c.isprintable() for c in title) < len(title) // 2:
+            title = None
+
+        # ── Icon filename at 0x104 (64 bytes, null-terminated ASCII) ──
+        icon_fn_raw = data[0x104:0x104 + 64]
+        end = icon_fn_raw.find(b'\x00')
+        if end >= 0: icon_fn_raw = icon_fn_raw[:end]
+        try:
+            icon_fn = icon_fn_raw.decode('ascii', errors='ignore').strip()
+        except Exception:
+            icon_fn = None
+
+        return title, icon_fn
+
+    @staticmethod
+    def _extract_icon_texture(ico_data):
+        """Extract 128x128 texture from a PS2 .ico file as RGBA bytes.
+
+        PS2 icon files contain a header, vertex/animation data, then a
+        128x128 16-bit ABGR-1555 texture at the end of the file.
+        Returns a bytes object (128*128*4 RGBA) or None.
+        """
+        TEX_BYTES = 128 * 128 * 2  # 32768
+        if len(ico_data) < TEX_BYTES + 20:
             return None
-        return title
+        # Check PS2 icon magic
+        magic = _mc_u32(ico_data, 0)
+        if magic != 0x00010000:
+            return None
+        # Texture type at offset 0x08 (0 = no texture)
+        tex_type = _mc_u32(ico_data, 0x08)
+        if tex_type == 0:
+            return None
+        # Texture is the last 32768 bytes
+        tex_raw = ico_data[-TEX_BYTES:]
+        # Batch-read all uint16 pixels
+        pixels_u16 = struct.unpack(f'<{128*128}H', tex_raw)
+        # Convert ABGR-1555 to RGBA-8888
+        rgba = bytearray(128 * 128 * 4)
+        for i, p in enumerate(pixels_u16):
+            j = i * 4
+            rgba[j]     = (p & 0x1F) << 3           # R
+            rgba[j + 1] = ((p >> 5) & 0x1F) << 3    # G
+            rgba[j + 2] = ((p >> 10) & 0x1F) << 3   # B
+            rgba[j + 3] = 255 if (p >> 15) else 0    # A
+        return bytes(rgba)
 
     def list_saves(self):
         root = self._dirents(self._rootdir_cluster, 512)
@@ -739,18 +797,38 @@ class _PS2Memcard:
             if e['name'] in ('.', '..', ''): continue
             if not (e['mode'] & _MODE_EXISTS) or not (e['mode'] & _MODE_DIR): continue
             subs = self._dirents(e['cluster'], e['length'])
-            files, total, icon_data = [], 0, None
+            files, total, icon_sys_data = [], 0, None
+            # Map filenames to their cluster/length for icon lookup
+            file_map = {}
             for s in subs:
                 if s['name'] in ('.', '..', ''): continue
                 if not (s['mode'] & _MODE_EXISTS) or not (s['mode'] & _MODE_FILE): continue
                 files.append((s['name'], s['length'], s['modified'] or s['created']))
                 total += s['length']
-                if s['name'].lower() == 'icon.sys' and icon_data is None:
-                    try: icon_data = self._chain_data(s['cluster'], min(s['length'], 2048))
+                file_map[s['name'].lower()] = s
+                if s['name'].lower() == 'icon.sys' and icon_sys_data is None:
+                    try: icon_sys_data = self._chain_data(s['cluster'], min(s['length'], 2048))
                     except Exception: pass
-            title = self._parse_icon_sys(icon_data) if icon_data else None
+
+            title, icon_fn = (None, None)
+            if icon_sys_data:
+                title, icon_fn = self._parse_icon_sys(icon_sys_data)
+
+            # Try to extract the icon texture
+            icon_pixels = None
+            if icon_fn:
+                ico_entry = file_map.get(icon_fn.lower())
+                if ico_entry:
+                    try:
+                        ico_raw = self._chain_data(ico_entry['cluster'],
+                                                   min(ico_entry['length'], 200000))
+                        icon_pixels = self._extract_icon_texture(ico_raw)
+                    except Exception:
+                        pass
+
             saves.append(PS2Save(e['name'], title or e['name'], total,
-                                 len(files), e['modified'] or e['created'], files))
+                                 len(files), e['modified'] or e['created'],
+                                 files, icon_pixels))
         return saves
 
 
@@ -4058,6 +4136,19 @@ def screen_save_browser(user, card):
     ROW_H = scaled(52)
     FILE_ROW_H = scaled(20)
     ICON_R = scaled(14)
+
+    # Build icon surface cache from extracted pixel data
+    icon_surfs = {}
+    icon_thumb_size = ICON_R * 2 + scaled(4)
+    for idx, save in enumerate(all_saves):
+        if save.icon_pixels and len(save.icon_pixels) == 128 * 128 * 4:
+            try:
+                ico_surf = pygame.image.frombuffer(save.icon_pixels, (128, 128), 'RGBA')
+                ico_surf = pygame.transform.smoothscale(ico_surf,
+                            (icon_thumb_size, icon_thumb_size))
+                icon_surfs[idx] = ico_surf
+            except Exception:
+                pass
     LEFT_PAD = scaled(14)
     SCROLL_SPEED = 8.0
 
@@ -4212,7 +4303,22 @@ def screen_save_browser(user, card):
 
                 icon_cx = LEFT_PAD + ICON_R + scaled(4)
                 icon_cy = ry + ROW_H // 2
-                _icon_save_slot(screen, icon_cx, icon_cy, ICON_R, t, is_sel)
+                if i in icon_surfs:
+                    # Render extracted PS2 save icon thumbnail
+                    ico = icon_surfs[i]
+                    iw, ih = ico.get_size()
+                    ix = icon_cx - iw // 2
+                    iy = icon_cy - ih // 2
+                    screen.blit(ico, (ix, iy))
+                    if is_sel:
+                        # Glow border around selected icon
+                        border_rect = pygame.Rect(ix - 1, iy - 1, iw + 2, ih + 2)
+                        border_alpha = int(180 + 60 * math.sin(t * 3))
+                        border_color = _blend(ACCENT, HDR, border_alpha / 255)
+                        pygame.draw.rect(screen, border_color, border_rect, 2,
+                                         border_radius=scaled(2))
+                else:
+                    _icon_save_slot(screen, icon_cx, icon_cy, ICON_R, t, is_sel)
 
                 text_x = text_x_base
                 max_text_w = W - text_x - scaled(60)
