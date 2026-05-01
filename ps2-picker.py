@@ -20,10 +20,18 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.24'
+VERSION = '0.1.25'
+
+# ─── Update Channel ─────────────────────────────────────────────
+# 0 = stable (pulls from main branch)
+# 1 = testing (pulls from testing branch)
+UPDATE_CHANNEL = 0
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
+import re
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
 # Suppress pygame welcome banner and warnings before import
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
@@ -61,7 +69,6 @@ DEFAULT_CONFIG = {
     "volume": 0.5,                                       # UI sound volume (0.0–1.0)
     "muted": False,                                      # Global mute toggle
     "setup_complete": False,                              # First-time wizard completed?
-    "update_channel": 0,                                   # 0 = stable/main, 1 = testing
 }
 
 # ═══ Configuration System ══════════════════════════════════════
@@ -1315,10 +1322,17 @@ def confirm_dialog(message):
                 last_joy = now
 
         screen.fill(BG)
-        # Truncate long messages to fit screen width
-        display_msg = truncate(message, F['lg'], W - scaled(40))
-        ms = F['lg'].render(display_msg, True, HDR)
-        screen.blit(ms, ms.get_rect(center=(W // 2, H // 3)))
+        # Render message lines (supports \n for multi-line)
+        lines = message.split('\n')
+        line_h = F['lg'].get_linesize() + scaled(4)
+        total_text_h = len(lines) * line_h
+        text_top = H // 3 - total_text_h // 2
+        for li, line in enumerate(lines):
+            line_font = F['lg'] if li == 0 else F['md']
+            line_color = HDR if li == 0 else TXT_DIM
+            display_line = truncate(line.strip(), line_font, W - scaled(40))
+            ls = line_font.render(display_line, True, line_color)
+            screen.blit(ls, ls.get_rect(center=(W // 2, text_top + li * line_h)))
         for i, label in enumerate(["Yes", "No"]):
             bx = W // 2 + (i * scaled(120) - scaled(60))
             rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
@@ -2105,7 +2119,6 @@ def settings_menu(username=None):
     }
     sel = 0
     last_joy = 0
-    _start_time = time.time()
 
     while True:
         now = time.time()
@@ -2149,50 +2162,20 @@ def settings_menu(username=None):
             if moved:
                 play_sfx('navigate'); last_joy = now
 
-        t = time.time() - _start_time
-
         screen.fill(BG)
-
-        # Themed header
         title = f"Settings - {username}" if username else "Global Settings"
-        title_surf = F['lg'].render(title, True, HDR)
-        screen.blit(title_surf, (scaled(12), scaled(10)))
-        ver_surf = F['sm'].render(f"v{VERSION}", True, TXT_DIM)
-        screen.blit(ver_surf, (W - ver_surf.get_width() - scaled(12), scaled(16)))
-        pygame.draw.line(screen, _blend(BG, ACCENT, 0.5),
-                         (scaled(8), scaled(42) - 1), (W - scaled(8), scaled(42) - 1), 1)
-        pygame.draw.line(screen, _blend(BG, ACCENT, 0.25),
-                         (scaled(8), scaled(42) + 1), (W - scaled(8), scaled(42) + 1), 1)
+        draw_header(title, "[A] Edit   [B] Back", f"v{VERSION}")
 
-        y = scaled(50)
-        ROW_H_S = scaled(42)
+        y = scaled(60)
         for i, (label, key) in enumerate(items):
             is_sel = (i == sel)
-            rect = pygame.Rect(scaled(14), y, W - scaled(28), ROW_H_S)
-
+            rect = pygame.Rect(scaled(20), y, W - scaled(40), scaled(38))
             if is_sel:
-                # Animated selection glow
-                glow_alpha = int(80 + 40 * math.sin(t * 3))
-                glow_color = _blend(BG, ACCENT, glow_alpha / 255)
-                pygame.draw.rect(screen, glow_color,
-                                 rect.inflate(scaled(4), scaled(2)),
-                                 border_radius=scaled(6))
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(5))
-                # Animated accent side bar
-                bar_h = int(ROW_H_S * (0.5 + 0.15 * math.sin(t * 4)))
-                accent_rect = pygame.Rect(rect.x, y + (ROW_H_S - bar_h) // 2,
-                                          scaled(3), bar_h)
-                pygame.draw.rect(screen, ACCENT, accent_rect, border_radius=scaled(1))
-            else:
-                if i % 2 == 0:
-                    pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.3),
-                                     rect, border_radius=scaled(4))
-                pygame.draw.rect(screen, _blend(BG, ACCENT, 0.12),
-                                 rect, 1, border_radius=scaled(4))
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
 
-            text_x = rect.x + scaled(16)
-            lbl = F['md_b' if is_sel else 'md'].render(label, True, HDR if is_sel else TXT)
-            screen.blit(lbl, (text_x, rect.y + scaled(4)))
+            lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
+            screen.blit(lbl, (rect.x + scaled(12), rect.y + scaled(4)))
 
             # Show current value for editable settings (skip submenu-only items)
             if key not in ("back", "theme", "controller_map", "update_channel"):
@@ -2207,8 +2190,7 @@ def settings_menu(username=None):
                 else:
                     val_str = truncate(str(val), F['sm'], W // 2 - scaled(20)) if val else "(not set)"
                 vs = F['sm'].render(val_str, True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(vs, (rect.right - vs.get_width() - scaled(12),
-                                 rect.y + ROW_H_S // 2 - vs.get_height() // 2))
+                screen.blit(vs, (rect.right - vs.get_width() - scaled(12), rect.y + scaled(10)))
             elif key == "update_channel":
                 ch_val = active_cfg.get("update_channel", 0)
                 ch_label = "Testing" if ch_val == 1 else "Stable"
@@ -2221,20 +2203,12 @@ def settings_menu(username=None):
                 if key == "cache_manager":
                     manifest = load_cache_manifest()
                     count = len(manifest)
-                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}",
-                                          True, ACCENT if is_sel else TXT_DIM)
-                    screen.blit(info, (rect.right - info.get_width() - scaled(28),
-                                      rect.y + ROW_H_S // 2 - info.get_height() // 2))
+                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}", True, ACCENT if is_sel else TXT_DIM)
+                    screen.blit(info, (rect.right - info.get_width() - scaled(28), rect.y + scaled(10)))
                 chev = F['md'].render("\u203A", True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(chev, (rect.right - chev.get_width() - scaled(12),
-                                   rect.y + ROW_H_S // 2 - chev.get_height() // 2))
+                screen.blit(chev, (rect.right - chev.get_width() - scaled(12), rect.y + scaled(4)))
 
-            # Subtle separator
-            sep_y = y + ROW_H_S + scaled(1)
-            pygame.draw.line(screen, _blend(BG, ACCENT, 0.08),
-                             (scaled(22), sep_y), (W - scaled(22), sep_y), 1)
-
-            y += ROW_H_S + scaled(4)
+            y += scaled(44)
 
         current_key = items[sel][1]
         hint = setting_hints.get(current_key, "")
@@ -2244,7 +2218,7 @@ def settings_menu(username=None):
         pygame.display.flip()
         if _need_fade:
             fade_from_black(); _need_fade = False
-        clock.tick(60)
+        clock.tick(30)
 
 
 # ═══ Controller Mapping Submenu ══════════════════════════════
@@ -2915,6 +2889,7 @@ def _handle_setting(key, username=None):
         if confirm_dialog(f"Switch to {new_label} channel?\nThe app will restart to apply this change."):
             active_cfg["update_channel"] = new_val
             save_global_config(active_cfg)
+            # Show restart message briefly
             screen.fill(BG)
             r1 = F['lg'].render(f"Switching to {new_label}", True, HDR)
             r2 = F['sm'].render("Restarting...", True, TXT_DIM)
@@ -5260,8 +5235,156 @@ def main():
                 pygame.quit(); sys.exit()
 
 
+# ═══ Self-Updater ═══════════════════════════════════════════════
+
+_UPDATE_REPO = "ryangjpriorx/ps2-picker"
+_UPDATE_BRANCHES = {0: "main", 1: "testing"}
+_UPDATE_FILES = ["ps2_picker.py", "ps2_checker.py"]
+_UPDATE_TIMEOUT = 10  # seconds
+
+
+def _parse_version(text):
+    """Extract VERSION = 'x.y.z' from source text and return as tuple."""
+    m = re.search(r'VERSION\s*=\s*[\x27"](\d+(?:\.\d+)*)[\x27"]', text)
+    if not m:
+        return None
+    parts = m.group(1).split('.')
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
+        return None
+
+
+def _download_raw(branch, filename):
+    """Download a file from GitHub raw and return its content as string."""
+    url = f"https://raw.githubusercontent.com/{_UPDATE_REPO}/{branch}/{filename}"
+    req = Request(url, headers={"User-Agent": "PS2Picker-Updater"})
+    resp = urlopen(req, timeout=_UPDATE_TIMEOUT)
+    return resp.read().decode('utf-8', errors='replace')
+
+
+def _wait_any_button():
+    """Block until any key or joystick button is pressed."""
+    pygame.event.clear()
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type in (pygame.KEYDOWN, pygame.JOYBUTTONDOWN):
+                return
+        clock.tick(30)
+
+
+def _self_update():
+    """Check for updates and replace files if a newer version is available.
+
+    Reads UPDATE_CHANNEL to pick the branch. Downloads each file from GitHub,
+    compares VERSION strings. If remote is newer, overwrites local files.
+    If versions match, continues silently. On any failure, notifies the user
+    but allows them to proceed.
+
+    Returns True if files were updated (caller should re-exec), False otherwise.
+    """
+    branch = _UPDATE_BRANCHES.get(UPDATE_CHANNEL, "main")
+    channel_label = "testing" if UPDATE_CHANNEL == 1 else "stable"
+
+    # Show a brief status message while checking
+    screen.fill(BG)
+    msg = F['md'].render(f"Checking for updates ({channel_label})...", True, TXT)
+    screen.blit(msg, msg.get_rect(center=(W // 2, H // 2)))
+    pygame.display.flip()
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    updated_any = False
+    newest_ver = None
+
+    for filename in _UPDATE_FILES:
+        local_path = os.path.join(script_dir, filename)
+
+        # Read local version (if file exists)
+        local_ver = None
+        if os.path.isfile(local_path):
+            try:
+                with open(local_path, 'r', encoding='utf-8', errors='replace') as fh:
+                    local_ver = _parse_version(fh.read())
+            except Exception:
+                local_ver = None
+
+        # Download remote version
+        try:
+            remote_text = _download_raw(branch, filename)
+        except Exception as e:
+            # Network failure — notify but allow proceeding
+            screen.fill(BG)
+            err1 = F['md'].render(f"Update check failed for {filename}", True, HDR)
+            err2 = F['sm'].render(str(e)[:80], True, TXT_DIM)
+            err3 = F['sm'].render("Press any button to continue", True, ACCENT)
+            screen.blit(err1, err1.get_rect(center=(W // 2, H // 2 - scaled(20))))
+            screen.blit(err2, err2.get_rect(center=(W // 2, H // 2 + scaled(4))))
+            screen.blit(err3, err3.get_rect(center=(W // 2, H // 2 + scaled(28))))
+            pygame.display.flip()
+            _wait_any_button()
+            continue
+
+        remote_ver = _parse_version(remote_text)
+
+        # Compare versions
+        if remote_ver is None:
+            continue  # Can't parse remote version — skip
+
+        if local_ver is not None and remote_ver <= local_ver:
+            continue  # Already up to date
+
+        # Remote is newer (or local file missing/unparseable) — replace
+        try:
+            tmp_path = local_path + ".update_tmp"
+            with open(tmp_path, 'w', encoding='utf-8') as fh:
+                fh.write(remote_text)
+            if IS_WINDOWS and os.path.exists(local_path):
+                os.remove(local_path)
+            os.rename(tmp_path, local_path)
+            updated_any = True
+            newest_ver = remote_ver
+        except Exception as e:
+            screen.fill(BG)
+            err1 = F['md'].render(f"Failed to update {filename}", True, HDR)
+            err2 = F['sm'].render(str(e)[:80], True, TXT_DIM)
+            err3 = F['sm'].render("Press any button to continue", True, ACCENT)
+            screen.blit(err1, err1.get_rect(center=(W // 2, H // 2 - scaled(20))))
+            screen.blit(err2, err2.get_rect(center=(W // 2, H // 2 + scaled(4))))
+            screen.blit(err3, err3.get_rect(center=(W // 2, H // 2 + scaled(28))))
+            pygame.display.flip()
+            _wait_any_button()
+
+    if updated_any:
+        ver_str = '.'.join(str(p) for p in newest_ver) if newest_ver else '?'
+        screen.fill(BG)
+        u1 = F['lg'].render("Update Applied!", True, HDR)
+        u2 = F['md'].render(f"Updated to v{ver_str} ({channel_label})", True, ACCENT)
+        u3 = F['sm'].render("Restarting...", True, TXT_DIM)
+        screen.blit(u1, u1.get_rect(center=(W // 2, H // 2 - scaled(20))))
+        screen.blit(u2, u2.get_rect(center=(W // 2, H // 2 + scaled(6))))
+        screen.blit(u3, u3.get_rect(center=(W // 2, H // 2 + scaled(28))))
+        pygame.display.flip()
+        time.sleep(2)
+        return True
+
+    return False
+
+
 # ═══ Entry Point ═══════════════════════════════════════════════
 
 init_sounds()
+
+# Self-update check (skip with --skip-update)
+if '--skip-update' not in sys.argv:
+    if _self_update():
+        # Files were replaced — re-exec to load the new version
+        pygame.quit()
+        os.execv(sys.executable, [sys.executable] + sys.argv + ['--skip-update'])
+else:
+    # Remove the flag so it doesn't persist into future re-execs
+    sys.argv = [a for a in sys.argv if a != '--skip-update']
+
 show_splash()
 main()
