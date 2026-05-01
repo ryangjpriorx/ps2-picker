@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.36'
+VERSION = '0.2.0'
 
 # ─── Update Channel ─────────────────────────────────────────────
 # 0 = stable (pulls from main branch)
@@ -1112,6 +1112,7 @@ def draw_progress(game_name, progress, status="Extracting"):
 def draw_toast(msg, color=SUCCESS, duration=1.2):
     """Show a brief toast notification at the bottom of the screen."""
     toast_h = scaled(40)
+    backdrop = screen.copy()
     start = time.time()
     while time.time() - start < duration:
         for ev in pygame.event.get():
@@ -1119,6 +1120,7 @@ def draw_toast(msg, color=SUCCESS, duration=1.2):
                 return
         t = (time.time() - start) / duration
         alpha = int(255 * (1 - t) if t > 0.7 else 255)
+        screen.blit(backdrop, (0, 0))
         overlay = pygame.Surface((W, toast_h))
         overlay.fill(color)
         overlay.set_alpha(alpha)
@@ -2971,7 +2973,10 @@ def _handle_setting(key, username=None):
             pygame.display.flip()
             time.sleep(1.5)
             pygame.quit()
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            try:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception:
+                sys.exit(0)
         return
 
     # Persist changes
@@ -4562,6 +4567,7 @@ def screen_save_browser(user, card):
     # Scrolling title state: tracks pixel offset per save for marquee effect
     _title_scroll_offsets = {}   # idx -> current pixel offset
     _title_scroll_pause = {}    # idx -> pause timer (seconds remaining)
+    _title_scroll_dir = {}      # idx -> scroll direction (+1 forward, -1 reverse)
     TITLE_SCROLL_SPEED = 30     # pixels per second
     TITLE_SCROLL_PAUSE = 1.5    # seconds to pause at each end
 
@@ -4975,43 +4981,38 @@ def screen_save_browser(user, card):
                 screen.set_clip(None)
                 _title_scroll_offsets.pop(idx, None)
                 _title_scroll_pause.pop(idx, None)
+                _title_scroll_dir.pop(idx, None)
             else:
-                # Scrolling marquee
+                # Scrolling marquee with smooth ping-pong bounce
                 overflow = ftw - max_title_w
                 if idx not in _title_scroll_offsets:
                     _title_scroll_offsets[idx] = 0.0
                     _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
+                    _title_scroll_dir[idx] = 1
 
                 pause = _title_scroll_pause.get(idx, 0)
                 scroll_off = _title_scroll_offsets.get(idx, 0)
+                direction = _title_scroll_dir.get(idx, 1)
                 dt_frame = clock.get_time() / 1000.0
 
                 if pause > 0:
                     _title_scroll_pause[idx] = pause - dt_frame
                 else:
-                    scroll_off += TITLE_SCROLL_SPEED * dt_frame
+                    scroll_off += direction * TITLE_SCROLL_SPEED * dt_frame
                     if scroll_off >= overflow:
                         scroll_off = overflow
+                        _title_scroll_dir[idx] = -1
                         _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
-                        # Reverse direction next cycle
+                    elif scroll_off <= 0:
+                        scroll_off = 0.0
+                        _title_scroll_dir[idx] = 1
+                        _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
                     _title_scroll_offsets[idx] = scroll_off
 
-                    # Check if we reached the end and need to bounce back
-                    if scroll_off >= overflow and _title_scroll_pause.get(idx, 0) <= 0:
-                        _title_scroll_offsets[idx] = overflow
-                        _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
-
-                # Bounce: if offset hit overflow, next cycle goes back to 0
-                # Use a ping-pong based on a cycle counter
                 blit_x = rect.x + scaled(4) - int(scroll_off)
                 screen.set_clip(title_clip)
                 screen.blit(full_title_surf, (blit_x, title_y))
                 screen.set_clip(None)
-
-                # Reset to bounce back after reaching end
-                if scroll_off >= overflow and _title_scroll_pause.get(idx, 0) <= 0:
-                    _title_scroll_offsets[idx] = 0.0
-                    _title_scroll_pause[idx] = TITLE_SCROLL_PAUSE
 
         # Page dots indicator (if multiple pages)
         if total_pages > 1:

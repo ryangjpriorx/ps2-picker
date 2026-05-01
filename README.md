@@ -8,192 +8,192 @@ Designed for **640×480** but features auto-scaling, uses a **high‑contrast ha
 
 ---
 
-## ✨ Key Features
+# PS2 Picker
 
-### 🎮 Built for Handheld Streaming (RG35XX‑H, RG35XX‑Plus, etc.)
-- UI scaled and tuned for 640×480 displays (auto-scales to any resolution)
-- Large hit‑targets, readable fonts, and high‑contrast color palette
-- Fully navigable with D‑pad + ABXY + Start/Select
-- Works seamlessly through Sunshine's virtual Xbox controller
-- Smooth crossfade transitions between all screens
-- Lerp-based smooth scrolling with scroll indicators
+A controller-driven PS2 game launcher with profile management, memory card browsing, and a fully themed UI — built for couch setups, handhelds, and headless devices.
 
-### 🚀 Fast PS2 Game Launching
-- Scans your PS2 ROM directory and builds a clean, sorted list
-- Launches games through RetroArch's **PCSX2 libretro core**
-- Automatically reinitializes pygame after RetroArch exits
-- Cached games sort to the top with a ⚡ indicator for instant access
-
-### 👤 User Profiles
-Each user gets:
-- Their own profile folder
-- Their own memory card files
-- Their own last‑played tracking
-
-Perfect for shared handhelds or family setups.
-
-### 💾 Memory Card Management
-- Auto‑detects RetroArch memcard directories
-- Ensures required `.ps2` files exist
-- Per‑user memcard switching without touching RetroArch menus
-- Create and delete memory cards from the on-screen UI
-
-### ⚡ Local Cache System
-- Keeps up to **3 recently played games** (configurable) in a fast local cache
-- Reduces load times when streaming over Sunshine
-- Automatic LRU eviction when cache is full with interactive picker
-- **Cache Manager** in settings — view per-game sizes, last-used times, delete individually or clear all
-- Stale cache entries automatically purged on every reload
-
-### 🎨 Theme System
-- 10 built-in color presets (Royal Purple, Ocean Blue, Forest Green, etc.)
-- Per-channel HSV color editing for fully custom themes
-- Live preview while editing
-- Theme shared across picker and checker
-
-### 🔄 Self-Updater
-- Automatic update checking on launch via HTTP (no git dependency required)
-- Configurable update channel (`main` or `testing`) in config
-- One-button update from the checker GUI or terminal prompt
-- Auto-restarts after successful update
-- Background update check — UI stays responsive during fetch
-
-### 🎛️ Controller Remapping
-- Remap all menu actions (confirm, back, scroll, settings, search, etc.)
-- On-screen guided remap flow with safety fallbacks
-- Stored in config — survives updates
-- Shared between picker and checker
-
-### 🛠️ Dependency Checker (Pre-Launcher)
-- Pre-launch checker verifies all dependencies before starting
-- Themed GUI matching the main app (with terminal fallback)
-- Auto-detects RetroArch, cores, 7z, and Python packages
-- Guided path input for missing dependencies using on-screen keyboard and file browser
-- **Instant auto-launch** — skips directly to the picker when all deps are satisfied
-- HTTP-only version checking with configurable update channels
-
-### ⌨️ On-Screen Keyboard & File Browser
-- Full on-screen keyboard for text input (usernames, card names, paths)
-- File browser for navigating and selecting directories on headless setups
-- No physical keyboard required — everything works with a controller
-
-### 🗂 ROM & File Support
-- ROM formats: `.zip`, `.7z`, `.iso`, `.chd`
-- Game formats: `iso`, `bin`, `chd`, `cue`
-- Auto‑scans and filters invalid entries
-- Real-time search/filter with Select button
+![Python 3.6+](https://img.shields.io/badge/python-3.6%2B-blue) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)
 
 ---
 
-## 📁 Directory Layout
+## Features
 
-| Purpose | Path |
-|---------|------|
-| Global config | `~/.ps2-picker/config.json` |
-| Checker config | `~/.ps2-picker/checker.json` |
-| User profiles | `~/ps2-users/<name>/` |
-| Local cache | `~/ps2-cache/` |
-| Cache manifest | `~/ps2-cache/manifest.json` |
-| RetroArch memcards | Auto‑detected |
+### Game Management
+- **Archive extraction** — Launch games directly from `.zip` and `.7z` archives; PS2 Picker extracts them automatically with a real-time progress bar
+- **LRU game cache** — Extracted games are cached locally with a configurable size limit (default 3). Least-recently-used entries are evicted first
+- **Cache manager** — View cached games with size and last-used info, delete individual entries or clear everything
+- **In-app search** — Press Select to filter your game list by name
+- **Supported formats** — `.zip`, `.7z`, `.iso`, `.chd` archives containing `.iso`, `.bin`, `.chd`, or `.cue` disc images
+
+### User Profiles
+- **Multiple profiles** — Each user gets their own directory under `~/ps2-users/` with independent settings
+- **Memory card management** — Create, load, and switch between named memory card snapshots per profile. Cards are copied to/from the PCSX2 memcard directory on launch
+- **PS2 save browser** — Reads actual PS2 memory card filesystem images (`.ps2`), displaying individual game saves with titles, sizes, file counts, timestamps, and extracted save icons
+- **Welcome back splash** — Personalized animated greeting when switching to a returning profile
+
+### Theming
+- **7 built-in presets** — Royal Purple & Gold (default), Ocean Blue, Forest Green, Crimson Red, Midnight Teal, Retro Amber, Slate Gray
+- **Custom themes** — Per-channel HSV color sliders for background, accent, highlight, and text with live preview
+- **Consistent styling** — Both `ps2-picker` and `ps2-checker` share the same theme system, so the pre-launcher matches your chosen colors
+
+### Input
+- **Full controller support** — Navigate everything with a gamepad: menus, file browser, on-screen keyboard, color pickers, and dialogs
+- **Remappable buttons** — Remap all 8 actions (Confirm, Back, Extra, Alt, L1, R1, Select, Start) via Settings > Controller Mapping
+- **Keyboard fallback** — Arrow keys, Enter, Escape, and Space always work regardless of controller mapping — no risk of locking yourself out
+- **Analog + D-pad + hat** — Stick, D-pad, and hat inputs all work for navigation
+- **Hot-plug detection** — Controllers are detected at the splash screen and re-polled if disconnected
+
+### UI & Audio
+- **Resolution-aware scaling** — All UI elements scale from a 480p reference, so the interface looks correct at any resolution
+- **Procedural sound effects** — Navigate, select, back, error, and success sounds are generated at runtime — no external audio files needed
+- **Animated transitions** — Fade-to-black and fade-from-black screen transitions throughout
+- **On-screen keyboard** — Full text input without a physical keyboard, for naming profiles, cards, and search queries
+- **PS2 BIOS boot** — Hold L2 on the main menu to launch RetroArch with the PS2 core in BIOS mode (no ROM)
+
+### Updates
+- **Two update channels** — Stable (main branch) and Testing, switchable from the settings menu
+- **Self-updating** — Both `ps2-picker.py` and `ps2-checker.py` pull updates directly from GitHub with version comparison and changelog display
 
 ---
 
-## 🛠 Requirements
+## Requirements
 
-- Python 3
-- Pygame
-- RetroArch with **PCSX2 libretro core**
-- 7z (p7zip-full) — for `.7z` archive extraction
-- Sunshine (for handheld streaming)
-- Moonlight on RG35XX‑H or similar device
+| Dependency | Required | Purpose |
+|------------|----------|---------|
+| **Python 3.6+** | Yes | Runtime |
+| **pygame** | Yes | Display, input, audio |
+| **RetroArch** | Yes | Emulator backend (launches games via PCSX2 core) |
+| **7z** (p7zip) | No | Extraction of `.7z` archives (`.zip` is handled natively) |
 
----
+### Running the Dependency Checker
 
-## ▶️ Running
+`ps2-checker.py` is a standalone pre-launcher that verifies all dependencies, offers install commands for your distro, and handles self-updates — all before launching the main app.
 
 ```bash
-# Run the dependency checker first (recommended)
+# Full check → update → launch
 python3 ps2-checker.py
 
-# Or launch directly
-python3 ps2-picker.py
+# Check dependencies only (don't launch)
+python3 ps2-checker.py --check-only
+
+# Force terminal mode (no GUI)
+python3 ps2-checker.py --terminal
+
+# Skip the update check
+python3 ps2-checker.py --skip-update
 ```
 
-The script automatically forces `DISPLAY=:0` for headless/streaming setups.
+The checker has both a themed GUI mode (when pygame is available) and a colored terminal fallback. It auto-detects your distro and shows the correct install commands.
 
 ---
 
-## 📦 Installation
+## Supported Platforms
+
+The dependency checker provides tailored install commands for:
+
+| Platform | pygame | 7z | RetroArch |
+|----------|--------|----|-----------|
+| **Debian / Ubuntu** | `apt install python3-pygame` | `apt install p7zip-full` | `apt install retroarch` |
+| **Arch Linux** | `pacman -S python-pygame` | `pacman -S p7zip` | `pacman -S retroarch` |
+| **Fedora** | `dnf install python3-pygame` | `dnf install p7zip p7zip-plugins` | `dnf install retroarch` |
+| **SteamOS (Steam Deck)** | `pip install --user pygame` | `pacman -S p7zip` | Flatpak |
+| **Batocera** | Pre-installed | Pre-installed | Pre-installed |
+| **openSUSE** | `zypper install python3-pygame` | `zypper install p7zip-full` | `zypper install retroarch` |
+| **Gentoo** | `emerge dev-python/pygame` | `emerge app-arch/p7zip` | `emerge games-emulation/retroarch` |
+| **Void Linux** | `xbps-install python3-pygame` | `xbps-install p7zip` | `xbps-install retroarch` |
+| **Alpine** | `apk add py3-pygame` | `apk add p7zip` | `apk add retroarch` |
+| **NixOS** | `nix-env -iA nixpkgs.python3Packages.pygame` | `nix-env -iA nixpkgs.p7zip` | `nix-env -iA nixpkgs.retroarch` |
+| **Windows** | `pip install pygame` | `winget install 7zip.7zip` | `winget install Libretro.RetroArch` |
+
+---
+
+## Quick Start
 
 ```bash
-git clone https://github.com/ryangjpriorx/ps2-picker
+# 1. Clone the repo
+git clone https://github.com/ryangjpriorx/ps2-picker.git
 cd ps2-picker
+
+# 2. Run the checker to verify dependencies and launch
 python3 ps2-checker.py
 ```
 
-The checker will guide you through any missing dependencies on first run.
+On first launch, PS2 Picker runs a setup wizard that:
+1. Auto-detects your RetroArch installation and PCSX2 core
+2. Asks you to pick your ROM folder (via the built-in file browser)
+3. Creates your first user profile
+
+If auto-detection finds everything, setup is just two steps: choose your ROM folder and enter a username.
 
 ---
 
-## ⚙️ Configuration
+## Usage
 
-All settings are stored in `~/.ps2-picker/config.json`:
+```bash
+# Launch normally
+python3 ps2-picker.py
 
-```json
-{
-  "rom_dir": "/path/to/ps2/roms",
-  "core_path": "/path/to/pcsx2_libretro.so",
-  "local_cache_dir": "~/ps2-cache",
-  "max_cached_games": 3,
-  "volume": 70,
-  "update_channel": "main",
-  "theme": {
-    "bg": [18, 8, 32],
-    "accent": [147, 51, 234],
-    "highlight": [255, 200, 50],
-    "text": [220, 210, 190]
-  },
-  "button_map": {
-    "confirm": 0,
-    "back": 1,
-    "extra": 2,
-    "alt": 3,
-    "shoulder_l": 4,
-    "select": 6,
-    "start": 7
-  }
-}
+# Run dependency checker first
+python3 ps2-picker.py --check-deps
 ```
+
+### Default Controls
+
+| Button | Action |
+|--------|--------|
+| **A** | Confirm / Select / Launch |
+| **B** | Back / Cancel |
+| **X** | Extra action (context-dependent) |
+| **Y** | Alt action (context-dependent) |
+| **L1 / R1** | Page left / right, toggle hidden files |
+| **Select** | Search games |
+| **Start** | Open settings |
+| **L2 (hold)** | Boot PS2 BIOS (main menu only) |
+
+All buttons are remappable via **Settings > Controller Mapping**. Keyboard navigation (arrows, Enter, Escape, Space) always works as a safety fallback.
+
+---
+
+## Settings
+
+Accessible from the main menu or in-game via Start:
 
 | Setting | Description |
 |---------|-------------|
-| `rom_dir` | Folder containing PS2 game archives |
-| `core_path` | Path to PCSX2 RetroArch core (.so or .dll) |
-| `local_cache_dir` | Where extracted games are cached |
-| `max_cached_games` | Number of cached games before LRU eviction (1–20) |
-| `volume` | UI sound effects volume (0 = mute) |
-| `update_channel` | `"main"` for stable, `"testing"` for latest |
-| `theme` | Custom RGBA color overrides (4 base colors) |
-| `button_map` | Controller button assignments (Xbox button indices) |
+| **Volume** | UI sound effects volume with mute toggle |
+| **ROM Folder** | Path to your PS2 game archives |
+| **RetroArch Core** | Path to the PCSX2 RetroArch core (`.so` / `.dll`) |
+| **Cache Folder** | Where extracted games are stored (default: `~/ps2-cache/`) |
+| **Max Cached Games** | LRU cache size limit, 1–20 (default: 3) |
+| **Manage Cache** | Browse and delete cached extractions |
+| **Theme Colors** | Preset picker or custom HSV color editor |
+| **Controller Mapping** | Remap all gamepad buttons |
+| **Update Channel** | Switch between Stable and Testing branches |
 
 ---
 
-## 🎮 Controls
+## File Structure
 
-| Button | Game List | User/Card Picker | Settings | Cache Manager |
-|--------|-----------|-------------------|----------|---------------|
-| **D-Pad / Left Stick** | Navigate | Navigate | Navigate | Navigate |
-| **A** | Launch game | Select | Confirm | Delete item |
-| **B** | Back | Back / Exit | Back | Back |
-| **X** | — | Delete card | — | — |
-| **Y** | — | — | — | Clear all |
-| **Start** | Open settings | — | — | — |
-| **Select** | Search / Filter | — | — | — |
+```
+~/.ps2-picker/
+  └── config.json          # Global settings, theme, button mappings
 
-All buttons are remappable from Settings → Controller Mapping.
+~/ps2-users/
+  └── <username>/
+      ├── meta.json         # Profile metadata (last card, play stats)
+      └── cards/
+          └── <cardname>/
+              ├── Mcd001.ps2  # Memory card slot 1 snapshot
+              └── Mcd002.ps2  # Memory card slot 2 snapshot
+
+~/ps2-cache/
+  ├── manifest.json         # Cache index (game name, size, timestamps)
+  └── <game-hash>/          # Extracted disc images
+```
 
 ---
 
-## 📄 License
+## License
 
-[MIT License](LICENSE) — free to use, modify, and distribute.
+This project is provided as-is for personal use.
+
