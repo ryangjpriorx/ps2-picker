@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime
@@ -3839,7 +3839,12 @@ def _launch_retroarch_standalone():
     """Launch RetroArch without a game for configuration."""
     global screen, W, H, F, joy
     ra = _find_retroarch()
-    pygame.quit()
+    if not ra:
+        play_sfx('error')
+        draw_center_msg("Error", "RetroArch not found!", "Check your PATH or install RetroArch")
+        time.sleep(2)
+        return
+    # Don't quit pygame — matches the working game launch pattern
     try:
         subprocess.run([ra])
     except Exception as e:
