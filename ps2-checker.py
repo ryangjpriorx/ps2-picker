@@ -9,7 +9,7 @@
      python3 ps2-checker.py --terminal    Force terminal mode (no GUI)
 """
 
-VERSION = '0.0.12'
+VERSION = '0.0.13'
 
 import os, sys, platform, shutil, subprocess, importlib.util, json, string, time, math
 try:
@@ -876,36 +876,28 @@ def run_gui_mode(check_only=False):
     update_msg = ''
     channel = get_update_channel()
 
-    # Kick off update check (blocking but fast after fetch)
+    # If all deps OK and not check-only, launch picker immediately
+    # Update check runs in background — don't block the user
+    if all_ok and main_app_exists and not check_only:
+        pygame.quit()
+        _launch()
+        return
+
+    # Background update check (non-blocking)
+    import threading
     update_status = 'checking'
-    # Draw a quick "checking" frame before blocking on fetch
-    scr.fill(BG)
-    checking_surf = fonts['lg'].render('Checking for updates...', True, HINT)
-    scr.blit(checking_surf, checking_surf.get_rect(center=(w // 2, h // 2)))
-    ver_surf = fonts['sm'].render(f'v{VERSION} ({channel})', True, TXT_DIM)
-    scr.blit(ver_surf, ver_surf.get_rect(center=(w // 2, h // 2 + sc(24))))
-    pygame.display.flip()
+    _update_result = [None]  # mutable container for thread result
 
-    try:
-        update_info = check_for_updates()
-        update_status = 'result'
-    except Exception as e:
-        update_info = {'available': False, 'channel': channel,
-                       'local_version': VERSION, 'remote_version': None,
-                       'error': f'Check failed: {e}'}
-        update_status = 'result'
+    def _bg_update_check():
+        try:
+            _update_result[0] = check_for_updates()
+        except Exception as e:
+            _update_result[0] = {'available': False, 'channel': channel,
+                                 'local_version': VERSION, 'remote_version': None,
+                                 'error': f'Check failed: {e}'}
 
-    # Re-init joystick after blocking fetch (controller may have connected)
-    try:
-        pygame.joystick.quit()
-        pygame.joystick.init()
-        joy = None
-        if pygame.joystick.get_count() > 0:
-            joy = pygame.joystick.Joystick(0)
-            joy.init()
-    except Exception:
-        pass  # Older pygame may not support re-init
-    pygame.event.clear()  # Flush stale events from during fetch
+    update_thread = threading.Thread(target=_bg_update_check, daemon=True)
+    update_thread.start()
 
     def refresh_status():
         nonlocal missing, req_missing, all_ok, promptable_missing
@@ -944,6 +936,11 @@ def run_gui_mode(check_only=False):
     while running:
         now = time.time()
         elapsed = now - start_time
+
+        # Poll background update thread
+        if update_status == 'checking' and not update_thread.is_alive():
+            update_info = _update_result[0]
+            update_status = 'result'
 
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
