@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.19'
+VERSION = '0.1.20'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -1314,10 +1314,17 @@ def confirm_dialog(message):
                 last_joy = now
 
         screen.fill(BG)
-        # Truncate long messages to fit screen width
-        display_msg = truncate(message, F['lg'], W - scaled(40))
-        ms = F['lg'].render(display_msg, True, HDR)
-        screen.blit(ms, ms.get_rect(center=(W // 2, H // 3)))
+        # Render message lines (supports \n for multi-line)
+        lines = message.split('\n')
+        line_h = F['lg'].get_linesize() + scaled(4)
+        total_text_h = len(lines) * line_h
+        text_top = H // 3 - total_text_h // 2
+        for li, line in enumerate(lines):
+            line_font = F['lg'] if li == 0 else F['md']
+            line_color = HDR if li == 0 else TXT_DIM
+            display_line = truncate(line.strip(), line_font, W - scaled(40))
+            ls = line_font.render(display_line, True, line_color)
+            screen.blit(ls, ls.get_rect(center=(W // 2, text_top + li * line_h)))
         for i, label in enumerate(["Yes", "No"]):
             bx = W // 2 + (i * scaled(120) - scaled(60))
             rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
@@ -3585,12 +3592,9 @@ def screen_main_menu():
                     sel_col = min(COLS - 1, sel_col + 1); play_sfx('navigate')
                 elif ev.key in (pygame.K_RETURN, pygame.K_SPACE):
                     idx = sel_row * COLS + sel_col
-                    choice_name = MENU_ICONS[idx][0]
-                    if choice_name == "Memory Cards" and _is_l2_held():
-                        choice_name = "Memory Cards+BIOS"
                     play_sfx('select')
                     fade_to_black()
-                    return choice_name
+                    return MENU_ICONS[idx][0]
                 elif ev.key == pygame.K_ESCAPE:
                     play_sfx('back')
                     fade_to_black()
@@ -3598,12 +3602,9 @@ def screen_main_menu():
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == BTN["confirm"]:
                     idx = sel_row * COLS + sel_col
-                    choice_name = MENU_ICONS[idx][0]
-                    if choice_name == "Memory Cards" and _is_l2_held():
-                        choice_name = "Memory Cards+BIOS"
                     play_sfx('select')
                     fade_to_black()
-                    return choice_name
+                    return MENU_ICONS[idx][0]
                 elif ev.button == BTN["back"]:
                     play_sfx('back')
                     fade_to_black()
@@ -3705,6 +3706,13 @@ def screen_main_menu():
                 label = label_font.render(name, True, label_color)
                 label_rect = label.get_rect(centerx=rect.centerx, y=rect.y + int(cell_h * 0.72))
                 screen.blit(label, label_rect)
+
+                # Subtle hint for Memory Cards cell
+                if name == "Memory Cards" and is_sel:
+                    hint_surf = F['sm'].render("Hold L2 for BIOS", True, TXT_DIM)
+                    hint_rect = hint_surf.get_rect(centerx=rect.centerx,
+                                                   y=rect.y + int(cell_h * 0.86))
+                    screen.blit(hint_surf, hint_rect)
 
         # Description hint for selected item
         sel_idx = sel_row * COLS + sel_col
@@ -5133,19 +5141,19 @@ def main():
                     else:
                         break  # back to card picker
 
-        elif choice == "Memory Cards+BIOS":
-            # L2 was held when selecting Memory Cards — boot to PS2 BIOS
-            if confirm_dialog("Boot to PS2 BIOS?\nManage saves in the real PS2 system menu."):
-                _launch_ps2_bios(user)
-                screen, W, H, F, joy = init_display()
-                init_sounds()
-                apply_volume()
-                show_welcome_back(user)
-                pygame.event.clear()
-
         elif choice == "Memory Cards":
-            # Normal card management
-            screen_memcard_picker(user)
+            # L2 held = boot to PS2 BIOS for save management
+            if _is_l2_held():
+                if confirm_dialog("Boot to PS2 BIOS?\nManage saves in the real PS2 system menu."):
+                    _launch_ps2_bios(user)
+                    screen, W, H, F, joy = init_display()
+                    init_sounds()
+                    apply_volume()
+                    show_welcome_back(user)
+                    pygame.event.clear()
+            else:
+                # Card management directly
+                screen_memcard_picker(user)
 
         elif choice == "Cache":
             cache_manager_screen()
