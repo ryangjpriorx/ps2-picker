@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.0.16'
+VERSION = '0.0.17'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
@@ -2628,6 +2628,7 @@ def cache_manager_screen():
         else:
             size_str = f"{total_bytes / (1 << 10):.0f} KB"
 
+        _dirty = False
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
@@ -2650,8 +2651,8 @@ def cache_manager_screen():
                         reload_games()
                         play_sfx('select')
                         sel = min(sel, max(0, len(manifest) - 1))
+                    _dirty = True; break
                 if ev.key == pygame.K_DELETE and total:
-                    # Delete all
                     if confirm_dialog("Delete ALL cached games?"):
                         for name in list(manifest.keys()):
                             cache_path = manifest[name].get("path", "")
@@ -2662,6 +2663,7 @@ def cache_manager_screen():
                         reload_games()
                         sel = 0; scroll = 0
                         play_sfx('select')
+                    _dirty = True; break
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == BTN["confirm"] and total:
                     play_sfx('select')
@@ -2675,6 +2677,7 @@ def cache_manager_screen():
                         reload_games()
                         play_sfx('select')
                         sel = min(sel, max(0, len(manifest) - 1))
+                    _dirty = True; break
                 if ev.button == BTN["back"]:
                     play_sfx('back'); return
                 if ev.button == BTN["alt"] and total:  # Y = delete all
@@ -2688,12 +2691,16 @@ def cache_manager_screen():
                         reload_games()
                         sel = 0; scroll = 0
                         play_sfx('select')
+                    _dirty = True; break
             if ev.type == pygame.JOYHATMOTION and total:
                 hx, hy = ev.value
                 if hy == 1:
                     sel = max(0, sel - 1); play_sfx('navigate')
                 if hy == -1:
                     sel = min(total - 1, sel + 1); play_sfx('navigate')
+
+        if _dirty:
+            continue  # restart loop to rebuild entries from modified manifest
 
         if joy is not None and total and now - last_joy > DPAD_DELAY / 1000:
             moved = False
