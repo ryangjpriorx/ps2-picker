@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.15'
+VERSION = '0.1.16'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -5019,6 +5019,66 @@ def _launch_retroarch_standalone():
     pygame.event.clear()
 
 
+def _launch_ps2_bios(user):
+    """Boot to PS2 BIOS via RetroArch with the mounted memcard loaded."""
+    global screen, W, H, F, joy
+    core = active_cfg.get("core_path", "")
+    if not core or not os.path.exists(core):
+        play_sfx('error')
+        draw_center_msg("Error", "PS2 core not found!", "Check Settings > RetroArch Core")
+        time.sleep(2)
+        return
+    ra = _find_retroarch()
+    if not ra:
+        play_sfx('error')
+        draw_center_msg("Error", "RetroArch not found!", "Check your PATH or install RetroArch")
+        time.sleep(2)
+        return
+    # Load the mounted memory card
+    meta = get_user_meta(user)
+    card = meta.get("last_card", "")
+    if card:
+        load_memcard(user, card)
+    # Launch RetroArch with core but no content = boots to BIOS
+    try:
+        subprocess.run([ra, "-L", core])
+    except Exception as e:
+        play_sfx('error')
+        draw_center_msg("Launch Error", str(e)[:60], "Press any button")
+        _wait_any_button()
+    # Save memcard back after BIOS session
+    if card:
+        save_memcard(user, card)
+    # Reinit display
+    screen, W, H, F, joy = init_display()
+    init_sounds()
+    apply_volume()
+    pygame.event.clear()
+
+
+def _is_l2_held():
+    """Check if L2 trigger is currently held (axis or button)."""
+    if joy is None:
+        return False
+    # L2 is commonly axis 2, 4, or 5 depending on controller
+    # SDL maps triggers as axes with rest at -1.0, pressed at +1.0
+    for axis_id in (2, 4, 5):
+        try:
+            val = joy.get_axis(axis_id)
+            if val > 0.3:  # trigger pulled past ~65%
+                return True
+        except Exception:
+            pass
+    # Some controllers map L2 as a button (button 6 or 10)
+    for btn_id in (6, 10):
+        try:
+            if joy.get_button(btn_id):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def main():
     """Main application loop — profile first, then hub menu."""
     global screen, W, H, F, joy, active_cfg
@@ -5068,8 +5128,18 @@ def main():
                         break  # back to card picker
 
         elif choice == "Memory Cards":
-            # Card management directly
-            screen_memcard_picker(user)
+            # L2 held = boot to PS2 BIOS for save management
+            if _is_l2_held():
+                if confirm_dialog("Boot to PS2 BIOS?\nManage saves in the real PS2 system menu."):
+                    _launch_ps2_bios(user)
+                    screen, W, H, F, joy = init_display()
+                    init_sounds()
+                    apply_volume()
+                    show_welcome_back(user)
+                    pygame.event.clear()
+            else:
+                # Card management directly
+                screen_memcard_picker(user)
 
         elif choice == "Cache":
             cache_manager_screen()
