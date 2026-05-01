@@ -20,10 +20,18 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.27'
+VERSION = '0.1.28'
+
+# ─── Update Channel ─────────────────────────────────────────────
+# 0 = stable (pulls from main branch)
+# 1 = testing (pulls from testing branch)
+UPDATE_CHANNEL = 0
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
+import re
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
 # Suppress pygame welcome banner and warnings before import
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
@@ -1315,20 +1323,17 @@ def confirm_dialog(message):
                 last_joy = now
 
         screen.fill(BG)
-        # Multi-line message rendering (split on \n)
+        # Render message lines (supports \n for multi-line)
         lines = message.split('\n')
-        line_y = H // 3
-        for li, line_text in enumerate(lines):
-            if li == 0:
-                font = F['lg']
-                color = HDR
-            else:
-                font = F['md']
-                color = TXT_DIM
-            display_line = truncate(line_text, font, W - scaled(40))
-            ls = font.render(display_line, True, color)
-            screen.blit(ls, ls.get_rect(center=(W // 2, line_y)))
-            line_y += ls.get_height() + scaled(6)
+        line_h = F['lg'].get_linesize() + scaled(4)
+        total_text_h = len(lines) * line_h
+        text_top = H // 3 - total_text_h // 2
+        for li, line in enumerate(lines):
+            line_font = F['lg'] if li == 0 else F['md']
+            line_color = HDR if li == 0 else TXT_DIM
+            display_line = truncate(line.strip(), line_font, W - scaled(40))
+            ls = line_font.render(display_line, True, line_color)
+            screen.blit(ls, ls.get_rect(center=(W // 2, text_top + li * line_h)))
         for i, label in enumerate(["Yes", "No"]):
             bx = W // 2 + (i * scaled(120) - scaled(60))
             rect = pygame.Rect(bx - scaled(40), H // 2, scaled(80), scaled(32))
@@ -2193,7 +2198,7 @@ def settings_menu(username=None):
                 ch_color = (220, 160, 50) if ch_val == 1 else SUCCESS
                 ch_surf = F['sm'].render(ch_label, True, ch_color if is_sel else TXT_DIM)
                 screen.blit(ch_surf, (rect.right - ch_surf.get_width() - scaled(12),
-                                      rect.y + scaled(38) // 2 - ch_surf.get_height() // 2))
+                                      rect.y + ROW_H_S // 2 - ch_surf.get_height() // 2))
             elif key in ("theme", "controller_map", "cache_manager"):
                 # Show a chevron to indicate submenu
                 if key == "cache_manager":
@@ -3686,14 +3691,16 @@ MENU_ICONS = [
 ]
 
 
+
 def _is_l2_held():
-    """Check if L2 trigger is currently held (axis 4 > 0.5 or button 6)."""
+    """Check if L2 trigger is currently held (axis or button)."""
     if joy is None:
         return False
     try:
-        # Most controllers: L2 is axis 4 (range -1 to 1, resting at -1 or 0)
-        if joy.get_numaxes() > 4 and joy.get_axis(4) > 0.5:
-            return True
+        # Most controllers: L2 is axis 4 or 2 (range -1 to 1)
+        for axis_idx in (4, 2):
+            if joy.get_numaxes() > axis_idx and joy.get_axis(axis_idx) > 0.5:
+                return True
         # Fallback: some controllers map L2 to button 6
         if joy.get_numbuttons() > 6 and joy.get_button(6):
             return True
@@ -3703,21 +3710,24 @@ def _is_l2_held():
 
 
 def _launch_ps2_bios():
-    """Launch RetroArch with the PS2 core but no ROM (BIOS boot)."""
+    """Launch RetroArch with the PS2 core but no ROM (BIOS/menu boot)."""
+    global screen, W, H, F, joy
     core = active_cfg.get("core_path", "")
     if not core or not os.path.exists(core):
         play_sfx('error')
         draw_center_msg("Error", "PS2 core not found!", "Set it in Settings first.")
-        _wait_any_button()
+        time.sleep(2)
         return
     ra = _find_retroarch()
-    cmd = [ra, "-L", core]
-    try:
-        subprocess.run(cmd)
-    except Exception as e:
+    if not ra:
         play_sfx('error')
-        draw_center_msg("Launch Error", str(e)[:60], "Press any button")
-        _wait_any_button()
+        draw_center_msg("Error", "RetroArch not found!", "Check your PATH or install RetroArch")
+        time.sleep(2)
+        return
+    try:
+        subprocess.run([ra, "-L", core])
+    except Exception:
+        pass
 
 
 # ═══ Screen: Main Menu ═════════════════════════════════════════
@@ -4160,8 +4170,11 @@ def screen_user_picker():
 
 # ═══ Screen: Memory Card Picker (animated card UI) ═════════════
 
-def screen_memcard_picker(user):
-    """Pick or create a memory card. Returns card name or None."""
+def screen_memcard_picker(user, select_mode=False):
+    """Pick or create a memory card. Returns card name or None.
+    select_mode=True: A-press returns card name (used by Games handler).
+    select_mode=False: A-press enters save browser (card management).
+    """
     sel = 0
     last_joy = 0
     _need_fade = True
@@ -4210,10 +4223,15 @@ def screen_memcard_picker(user):
                         create_card(user, name.strip())
                     _dirty = True; break
                 elif sel < len(cards):
-                    # A = enter/browse the card's saves
                     play_sfx('select')
-                    screen_save_browser(user, cards[sel])
-                    _dirty = True; break
+                    if select_mode:
+                        # Return card name for Games handler
+                        fade_to_black()
+                        return cards[sel]
+                    else:
+                        # Enter save browser (card management mode)
+                        screen_save_browser(user, cards[sel])
+                        _dirty = True; break
 
             # Mount card (Y button)
             do_mount = False
@@ -4223,12 +4241,15 @@ def screen_memcard_picker(user):
                 do_mount = True
             if do_mount and sel < len(cards):
                 # Save mounted card to meta immediately — stay on screen
+                mounted_card_name = cards[sel]
                 meta = get_user_meta(user)
-                meta["last_card"] = cards[sel]
+                meta["last_card"] = mounted_card_name
                 save_user_meta(user, meta)
                 play_sfx('select')
-                _mount_toast_name = cards[sel]
+                _mount_toast_name = mounted_card_name
                 _mount_toast_time = time.time()
+                # Reset sel to 0 since get_cards() re-sorts (mounted card goes first)
+                sel = 0
 
             # Delete card (X button)
             do_delete = False
@@ -5236,7 +5257,7 @@ def main():
         if choice == "Games":
             # Card select → game picker
             while True:
-                card = screen_memcard_picker(user)
+                card = screen_memcard_picker(user, select_mode=True)
                 if card is None:
                     break  # back to main menu
 
@@ -5278,6 +5299,7 @@ def main():
         elif choice == "Exit":
             if confirm_dialog("Exit PS2 Picker?"):
                 pygame.quit(); sys.exit()
+
 
 
 # ═══ Entry Point ═══════════════════════════════════════════════
