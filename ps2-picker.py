@@ -20,10 +20,10 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 # ─── Standard Library Imports ───────────────────────────────────
-import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
+import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime
 
 # Suppress pygame welcome banner and warnings before import
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
@@ -3063,6 +3063,346 @@ def _launch_retroarch(game_path, core):
 
 
 
+# ═══ Procedural Icons (drawn with pygame primitives) ═══════════
+
+def _icon_games(surf, cx, cy, r, t, selected):
+    """Game disc icon — spinning disc with inner ring."""
+    speed = 2.0 if selected else 0.5
+    angle = t * speed
+    pulse = 1.0 + 0.06 * math.sin(t * 3) if selected else 1.0
+    pr = int(r * pulse)
+    # Outer disc
+    pygame.draw.circle(surf, ACCENT, (cx, cy), pr, 2)
+    # Inner ring
+    inner = int(pr * 0.4)
+    pygame.draw.circle(surf, HDR, (cx, cy), inner, 1)
+    # Center dot
+    pygame.draw.circle(surf, HDR, (cx, cy), max(2, int(pr * 0.1)))
+    # Shine line rotating around disc
+    sx = cx + int(pr * 0.7 * math.cos(angle))
+    sy = cy + int(pr * 0.7 * math.sin(angle))
+    ex = cx + int(pr * 0.95 * math.cos(angle))
+    ey = cy + int(pr * 0.95 * math.sin(angle))
+    pygame.draw.line(surf, HDR, (sx, sy), (ex, ey), 2)
+    # Second shine opposite
+    sx2 = cx + int(pr * 0.7 * math.cos(angle + math.pi))
+    sy2 = cy + int(pr * 0.7 * math.sin(angle + math.pi))
+    ex2 = cx + int(pr * 0.95 * math.cos(angle + math.pi))
+    ey2 = cy + int(pr * 0.95 * math.sin(angle + math.pi))
+    pygame.draw.line(surf, HDR, (sx2, sy2), (ex2, ey2), 2)
+
+
+def _icon_memcards(surf, cx, cy, r, t, selected):
+    """Memory card icon — PS2 card shape with chip."""
+    pulse = 1.0 + 0.05 * math.sin(t * 2.5) if selected else 1.0
+    pr = int(r * pulse)
+    # Card body (rounded rect)
+    cw = int(pr * 1.2)
+    ch = int(pr * 1.5)
+    card_rect = pygame.Rect(cx - cw // 2, cy - ch // 2, cw, ch)
+    pygame.draw.rect(surf, ACCENT, card_rect, 2, border_radius=max(1, int(pr * 0.15)))
+    # Notch at top-left corner
+    notch = int(pr * 0.3)
+    pygame.draw.rect(surf, BG, (card_rect.x, card_rect.y, notch, notch))
+    pygame.draw.line(surf, ACCENT, (card_rect.x + notch, card_rect.y), (card_rect.x + notch, card_rect.y + notch), 2)
+    pygame.draw.line(surf, ACCENT, (card_rect.x, card_rect.y + notch), (card_rect.x + notch, card_rect.y + notch), 2)
+    # Chip (small filled rect in center)
+    chip_w = int(pr * 0.5)
+    chip_h = int(pr * 0.35)
+    chip_rect = pygame.Rect(cx - chip_w // 2, cy - chip_h // 2 + int(pr * 0.15), chip_w, chip_h)
+    pygame.draw.rect(surf, HDR if selected else TXT_DIM, chip_rect, 0, border_radius=max(1, int(pr * 0.05)))
+    # Chip lines
+    for i in range(3):
+        ly = chip_rect.y + int(chip_h * (i + 1) / 4)
+        pygame.draw.line(surf, BG, (chip_rect.x + 2, ly), (chip_rect.right - 2, ly), 1)
+    # Animated label dots at bottom
+    if selected:
+        for i in range(3):
+            dx = cx - int(pr * 0.3) + int(pr * 0.3 * i)
+            dy = cy + int(pr * 0.55)
+            alpha = int(128 + 127 * math.sin(t * 4 + i * 1.2))
+            c = _blend(BG, HDR, alpha / 255)
+            pygame.draw.circle(surf, c, (dx, dy), max(1, int(pr * 0.06)))
+
+
+def _icon_cache(surf, cx, cy, r, t, selected):
+    """Cache/lightning bolt icon — \u26a1 shape."""
+    pulse = 1.0 + 0.07 * math.sin(t * 3.5) if selected else 1.0
+    pr = int(r * pulse)
+    # Lightning bolt as polygon
+    pts = [
+        (cx + int(pr * 0.1), cy - int(pr * 0.8)),
+        (cx - int(pr * 0.35), cy + int(pr * 0.05)),
+        (cx + int(pr * 0.05), cy + int(pr * 0.05)),
+        (cx - int(pr * 0.1), cy + int(pr * 0.8)),
+        (cx + int(pr * 0.35), cy - int(pr * 0.05)),
+        (cx - int(pr * 0.05), cy - int(pr * 0.05)),
+    ]
+    color = HDR if selected else ACCENT
+    pygame.draw.polygon(surf, color, pts, 0 if selected else 2)
+    # Glow particles when selected
+    if selected:
+        for i in range(4):
+            angle = t * 2 + i * math.pi / 2
+            dist = pr * (0.9 + 0.2 * math.sin(t * 5 + i))
+            px = cx + int(dist * math.cos(angle))
+            py = cy + int(dist * math.sin(angle))
+            sz = max(1, int(pr * 0.06 * (1 + 0.5 * math.sin(t * 6 + i * 2))))
+            pygame.draw.circle(surf, HDR, (px, py), sz)
+
+
+def _icon_settings(surf, cx, cy, r, t, selected):
+    """Settings gear icon — toothed circle that rotates."""
+    speed = 0.8 if selected else 0.2
+    angle = t * speed
+    pulse = 1.0 + 0.04 * math.sin(t * 2) if selected else 1.0
+    pr = int(r * pulse)
+    teeth = 8
+    outer_r = pr * 0.85
+    inner_r = pr * 0.6
+    # Build gear polygon
+    pts = []
+    for i in range(teeth):
+        a1 = angle + (2 * math.pi * i / teeth)
+        a2 = a1 + math.pi / teeth * 0.5
+        a3 = a1 + math.pi / teeth
+        a4 = a3 + math.pi / teeth * 0.5
+        pts.append((cx + int(outer_r * math.cos(a1)), cy + int(outer_r * math.sin(a1))))
+        pts.append((cx + int(outer_r * math.cos(a2)), cy + int(outer_r * math.sin(a2))))
+        pts.append((cx + int(inner_r * math.cos(a3)), cy + int(inner_r * math.sin(a3))))
+        pts.append((cx + int(inner_r * math.cos(a4)), cy + int(inner_r * math.sin(a4))))
+    color = HDR if selected else ACCENT
+    pygame.draw.polygon(surf, color, pts, 2)
+    # Center hole
+    pygame.draw.circle(surf, BG, (cx, cy), int(pr * 0.25))
+    pygame.draw.circle(surf, color, (cx, cy), int(pr * 0.25), 2)
+
+
+def _icon_retroarch(surf, cx, cy, r, t, selected):
+    """RetroArch icon — play triangle inside circle."""
+    pulse = 1.0 + 0.05 * math.sin(t * 2.5) if selected else 1.0
+    pr = int(r * pulse)
+    # Outer circle
+    pygame.draw.circle(surf, ACCENT, (cx, cy), pr, 2)
+    # Inner circle (ring)
+    pygame.draw.circle(surf, ACCENT, (cx, cy), int(pr * 0.75), 1)
+    # Play triangle offset slightly right for visual centering
+    tri_r = int(pr * 0.45)
+    offset = int(tri_r * 0.15)
+    pts = [
+        (cx + tri_r + offset, cy),
+        (cx - int(tri_r * 0.5) + offset, cy - int(tri_r * 0.8)),
+        (cx - int(tri_r * 0.5) + offset, cy + int(tri_r * 0.8)),
+    ]
+    color = HDR if selected else TXT
+    pygame.draw.polygon(surf, color, pts, 0 if selected else 2)
+    # Rotating dot around circle when selected
+    if selected:
+        dot_a = t * 2.5
+        dx = cx + int(pr * 0.88 * math.cos(dot_a))
+        dy = cy + int(pr * 0.88 * math.sin(dot_a))
+        pygame.draw.circle(surf, HDR, (dx, dy), max(2, int(pr * 0.08)))
+
+
+def _icon_exit(surf, cx, cy, r, t, selected):
+    """Exit/power icon — circle with gap and line at top."""
+    pulse = 1.0 + 0.05 * math.sin(t * 2) if selected else 1.0
+    pr = int(r * pulse)
+    color = DANGER if selected else ACCENT
+    # Power circle arc (with gap at top)
+    start_angle = math.radians(50)
+    end_angle = math.radians(310)
+    arc_r = int(pr * 0.7)
+    pts = []
+    steps = 24
+    for i in range(steps + 1):
+        a = start_angle + (end_angle - start_angle) * i / steps
+        pts.append((cx + int(arc_r * math.cos(a)), cy + int(arc_r * math.sin(a))))
+    if len(pts) > 1:
+        pygame.draw.lines(surf, color, False, pts, 2)
+    # Vertical power line
+    line_h = int(pr * 0.55)
+    pygame.draw.line(surf, color, (cx, cy - int(pr * 0.75)), (cx, cy - int(pr * 0.15)), 3 if selected else 2)
+    # Fade animation on selected
+    if selected:
+        glow_alpha = int(60 + 40 * math.sin(t * 4))
+        glow_surf = pygame.Surface((pr * 2, pr * 2), pygame.SRCALPHA)
+        pygame.draw.circle(glow_surf, (*DANGER, glow_alpha), (pr, pr), int(pr * 0.9))
+        surf.blit(glow_surf, (cx - pr, cy - pr))
+
+
+MENU_ICONS = [
+    ("Games",        _icon_games,     "Browse and launch PS2 games"),
+    ("Memory Cards", _icon_memcards,  "Manage per-user memory cards"),
+    ("Cache",        _icon_cache,     "View and manage cached games"),
+    ("Settings",     _icon_settings,  "Configure app and controls"),
+    ("RetroArch",    _icon_retroarch, "Launch RetroArch directly"),
+    ("Exit",         _icon_exit,      "Quit PS2 Picker"),
+]
+
+
+# ═══ Screen: Main Menu ═════════════════════════════════════════
+
+def screen_main_menu():
+    """Main menu with animated 3x2 grid. Returns action string or None."""
+    sel_row, sel_col = 0, 0
+    last_joy = 0
+    _need_fade = True
+    start_time = time.time()
+
+    # Selection glow animation state
+    glow_phase = 0.0
+
+    COLS, ROWS = 3, 2
+    HEADER_H = scaled(42)
+    HINT_H = scaled(22)
+
+    while True:
+        now = time.time()
+        t = now - start_time  # animation clock
+        dt = clock.get_time() / 1000.0  # delta time
+        glow_phase += dt * 3.0
+
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_UP:
+                    sel_row = max(0, sel_row - 1); play_sfx('navigate')
+                elif ev.key == pygame.K_DOWN:
+                    sel_row = min(ROWS - 1, sel_row + 1); play_sfx('navigate')
+                elif ev.key == pygame.K_LEFT:
+                    sel_col = max(0, sel_col - 1); play_sfx('navigate')
+                elif ev.key == pygame.K_RIGHT:
+                    sel_col = min(COLS - 1, sel_col + 1); play_sfx('navigate')
+                elif ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    idx = sel_row * COLS + sel_col
+                    play_sfx('select')
+                    fade_to_black()
+                    return MENU_ICONS[idx][0]
+                elif ev.key == pygame.K_ESCAPE:
+                    play_sfx('back')
+                    fade_to_black()
+                    return "Exit"
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == BTN["confirm"]:
+                    idx = sel_row * COLS + sel_col
+                    play_sfx('select')
+                    fade_to_black()
+                    return MENU_ICONS[idx][0]
+                elif ev.button == BTN["back"]:
+                    play_sfx('back')
+                    fade_to_black()
+                    return "Exit"
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hx == -1:
+                    sel_col = max(0, sel_col - 1); play_sfx('navigate')
+                elif hx == 1:
+                    sel_col = min(COLS - 1, sel_col + 1); play_sfx('navigate')
+                if hy == 1:
+                    sel_row = max(0, sel_row - 1); play_sfx('navigate')
+                elif hy == -1:
+                    sel_row = min(ROWS - 1, sel_row + 1); play_sfx('navigate')
+
+        # Analog stick navigation
+        if joy is not None and now - last_joy > DPAD_DELAY / 1000:
+            moved = False
+            try:
+                ax = joy.get_axis(0)
+                ay = joy.get_axis(1)
+                if ax < -0.5:
+                    sel_col = max(0, sel_col - 1); moved = True
+                elif ax > 0.5:
+                    sel_col = min(COLS - 1, sel_col + 1); moved = True
+                if ay < -0.5:
+                    sel_row = max(0, sel_row - 1); moved = True
+                elif ay > 0.5:
+                    sel_row = min(ROWS - 1, sel_row + 1); moved = True
+            except Exception:
+                pass
+            if moved:
+                play_sfx('navigate'); last_joy = now
+
+        # ─── Draw ───
+        screen.fill(BG)
+
+        # Header: title left, clock + version right
+        title_surf = F['lg'].render("PS2 Picker", True, HDR)
+        screen.blit(title_surf, (scaled(12), scaled(10)))
+
+        clock_str = datetime.datetime.now().strftime("%I:%M %p").lstrip('0')
+        ver_str = f"v{VERSION}"
+        clock_surf = F['sm'].render(clock_str, True, TXT_DIM)
+        ver_surf = F['sm'].render(ver_str, True, TXT_DIM)
+        screen.blit(clock_surf, (W - clock_surf.get_width() - scaled(12), scaled(8)))
+        screen.blit(ver_surf, (W - ver_surf.get_width() - scaled(12), scaled(22)))
+
+        # Subtle header divider line
+        pygame.draw.line(screen, _blend(BG, ACCENT, 0.3), (scaled(12), HEADER_H), (W - scaled(12), HEADER_H), 1)
+
+        # Grid layout
+        grid_top = HEADER_H + scaled(10)
+        grid_bot = H - HINT_H - scaled(8)
+        grid_left = scaled(16)
+        grid_right = W - scaled(16)
+        grid_w = grid_right - grid_left
+        grid_h = grid_bot - grid_top
+        gap = scaled(8)
+        cell_w = (grid_w - gap * (COLS - 1)) // COLS
+        cell_h = (grid_h - gap * (ROWS - 1)) // ROWS
+        icon_r = min(cell_w, cell_h) // 4  # icon radius
+
+        for row in range(ROWS):
+            for col in range(COLS):
+                idx = row * COLS + col
+                name, icon_fn, desc = MENU_ICONS[idx]
+                is_sel = (row == sel_row and col == sel_col)
+
+                x = grid_left + col * (cell_w + gap)
+                y = grid_top + row * (cell_h + gap)
+                rect = pygame.Rect(x, y, cell_w, cell_h)
+
+                # Cell background
+                if is_sel:
+                    # Animated glow border
+                    glow_alpha = int(100 + 60 * math.sin(glow_phase))
+                    glow_color = _blend(BG, ACCENT, glow_alpha / 255)
+                    # Outer glow rect
+                    glow_rect = rect.inflate(scaled(6), scaled(6))
+                    pygame.draw.rect(screen, glow_color, glow_rect, border_radius=scaled(10))
+                    # Filled bg
+                    pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(8))
+                    # Accent border
+                    pygame.draw.rect(screen, ACCENT, rect, 2, border_radius=scaled(8))
+                else:
+                    # Subtle card background
+                    pygame.draw.rect(screen, BAR_BG, rect, border_radius=scaled(8))
+                    pygame.draw.rect(screen, _blend(BAR_BG, ACCENT, 0.2), rect, 1, border_radius=scaled(8))
+
+                # Draw icon centered in upper portion of cell
+                icon_cx = rect.centerx
+                icon_cy = rect.y + int(cell_h * 0.4)
+                icon_fn(screen, icon_cx, icon_cy, icon_r, t, is_sel)
+
+                # Label below icon
+                label_font = F['md_b'] if is_sel else F['md']
+                label_color = HDR if is_sel else TXT
+                label = label_font.render(name, True, label_color)
+                label_rect = label.get_rect(centerx=rect.centerx, y=rect.y + int(cell_h * 0.72))
+                screen.blit(label, label_rect)
+
+        # Description hint for selected item
+        sel_idx = sel_row * COLS + sel_col
+        desc = MENU_ICONS[sel_idx][2]
+        draw_hint_bar(f"{desc}   [A] Select   [B] Exit")
+
+        pygame.display.flip()
+        if _need_fade:
+            fade_from_black(); _need_fade = False
+        clock.tick(60)  # 60fps for smooth icon animations
+
+
 # ═══ Screen: User Picker ═══════════════════════════════════════
 
 def screen_user_picker():
@@ -3495,8 +3835,24 @@ def show_welcome_back(user):
 
 # ═══ Main Loop ═════════════════════════════════════════════════
 
+def _launch_retroarch_standalone():
+    """Launch RetroArch without a game for configuration."""
+    global screen, W, H, F, joy
+    ra = _find_retroarch()
+    pygame.quit()
+    try:
+        subprocess.run([ra])
+    except Exception as e:
+        pass
+    # Reinit display after RetroArch exits
+    screen, W, H, F, joy = init_display()
+    init_sounds()
+    apply_volume()
+    pygame.event.clear()
+
+
 def main():
-    """Main application loop."""
+    """Main application loop — hub menu with 3x2 grid."""
     global screen, W, H, F, joy, active_cfg
 
     # Load global config
@@ -3510,39 +3866,53 @@ def main():
     reload_games()
 
     while True:
-        # User picker
-        user = screen_user_picker()
-        if user is None:
+        choice = screen_main_menu()
+
+        if choice == "Games":
+            # Games flow: user → card → game picker
+            user = screen_user_picker()
+            if user is None:
+                continue
+            apply_user_settings(user)
+
+            while True:
+                card = screen_memcard_picker(user)
+                if card is None:
+                    break  # back to main menu
+
+                while True:
+                    launched = screen_game_picker(user, card)
+                    if launched:
+                        screen, W, H, F, joy = init_display()
+                        init_sounds()
+                        apply_volume()
+                        show_welcome_back(user)
+                        pygame.event.clear()
+                    else:
+                        break  # back to card picker
+
+        elif choice == "Memory Cards":
+            # Card management: user → card picker (no game launch)
+            user = screen_user_picker()
+            if user is None:
+                continue
+            apply_user_settings(user)
+            screen_memcard_picker(user)
+
+        elif choice == "Cache":
+            cache_manager_screen()
+
+        elif choice == "Settings":
+            fade_to_black()
+            settings_menu()
+            reload_games()
+
+        elif choice == "RetroArch":
+            _launch_retroarch_standalone()
+
+        elif choice == "Exit":
             if confirm_dialog("Exit PS2 Picker?"):
                 pygame.quit(); sys.exit()
-            continue
-
-        # Apply per-user settings
-        apply_user_settings(user)
-
-        # Memory card picker loop
-        while True:
-            card = screen_memcard_picker(user)
-            if card is None:
-                break  # Back to user picker
-
-            # Game picker loop
-            while True:
-                launched = screen_game_picker(user, card)
-                if launched:
-                    # Game was played, reinit display
-                    screen, W, H, F, joy = init_display()
-                    init_sounds()
-                    apply_volume()
-
-                    # Welcome back
-                    show_welcome_back(user)
-
-                    # Flush stale input
-                    pygame.event.clear()
-                    # Continue inner loop -> back to game picker
-                else:
-                    break  # Back to memcard picker
 
 
 # ═══ Entry Point ═══════════════════════════════════════════════
