@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.35'
+VERSION = '0.1.36'
 
 # ─── Update Channel ─────────────────────────────────────────────
 # 0 = stable (pulls from main branch)
@@ -3471,22 +3471,38 @@ def extract_and_launch(game_file, user, card):
         archive_size = get_archive_size(full_path)
 
         if lower.endswith('.zip'):
-            # Use Python zipfile for cross-platform extraction
+            # Use Python zipfile with chunked reads for smooth progress
             try:
                 with zipfile.ZipFile(full_path, 'r') as zf:
                     members = zf.infolist()
-                    total = len(members)
-                    for idx, member in enumerate(members):
-                        zf.extract(member, dest)
-                        now = time.time()
-                        pct = (idx + 1) / total if total > 0 else 0
-                        draw_progress(game_file, min(pct, 0.99), "Extracting")
-                        for ev in pygame.event.get():
-                            if ev.type == pygame.QUIT:
-                                pygame.quit(); sys.exit()
-                            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
-                                shutil.rmtree(dest, ignore_errors=True)
-                                return False
+                    total_bytes = sum(m.file_size for m in members) or 1
+                    extracted_bytes = 0
+                    last_draw = 0
+                    CHUNK = 1 << 20  # 1 MB
+                    for member in members:
+                        target = os.path.join(dest, member.filename)
+                        if member.is_dir():
+                            os.makedirs(target, exist_ok=True)
+                            continue
+                        os.makedirs(os.path.dirname(target), exist_ok=True)
+                        with zf.open(member) as src, open(target, 'wb') as dst:
+                            while True:
+                                chunk = src.read(CHUNK)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                                extracted_bytes += len(chunk)
+                                now = time.time()
+                                if now - last_draw >= 0.1:
+                                    pct = extracted_bytes / total_bytes
+                                    draw_progress(game_file, min(pct, 0.99), "Extracting")
+                                    last_draw = now
+                                    for ev in pygame.event.get():
+                                        if ev.type == pygame.QUIT:
+                                            pygame.quit(); sys.exit()
+                                        if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN["back"]:
+                                            shutil.rmtree(dest, ignore_errors=True)
+                                            return False
             except Exception:
                 play_sfx('error')
                 draw_progress(game_file, 0, "Zip Error")
@@ -3497,14 +3513,11 @@ def extract_and_launch(game_file, user, card):
             # .7z — use external 7z command
             cmd_7z = _find_7z()
             cmd = [cmd_7z, "x", full_path, f"-o{dest}", "-y"]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             last_update = 0
-            while True:
-                line = proc.stdout.readline()
-                if not line and proc.poll() is not None:
-                    break
+            while proc.poll() is None:
                 now = time.time()
-                if now - last_update > 0.2:
+                if now - last_update >= 0.2:
                     cur_size = get_dir_size(dest)
                     pct = cur_size / archive_size if archive_size > 0 else 0
                     draw_progress(game_file, min(pct, 0.99), "Extracting")
@@ -3516,6 +3529,7 @@ def extract_and_launch(game_file, user, card):
                             proc.kill()
                             shutil.rmtree(dest, ignore_errors=True)
                             return False
+                time.sleep(0.05)
 
             if proc.returncode != 0:
                 play_sfx('error')
