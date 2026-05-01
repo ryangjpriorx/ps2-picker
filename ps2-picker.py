@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.18'
+VERSION = '0.1.19'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile, datetime, unicodedata
@@ -2102,7 +2102,6 @@ def settings_menu(username=None):
     }
     sel = 0
     last_joy = 0
-    _start_time = time.time()
 
     while True:
         now = time.time()
@@ -2146,50 +2145,20 @@ def settings_menu(username=None):
             if moved:
                 play_sfx('navigate'); last_joy = now
 
-        t = time.time() - _start_time
-
         screen.fill(BG)
-
-        # Themed header
         title = f"Settings - {username}" if username else "Global Settings"
-        title_surf = F['lg'].render(title, True, HDR)
-        screen.blit(title_surf, (scaled(12), scaled(10)))
-        ver_surf = F['sm'].render(f"v{VERSION}", True, TXT_DIM)
-        screen.blit(ver_surf, (W - ver_surf.get_width() - scaled(12), scaled(16)))
-        pygame.draw.line(screen, _blend(BG, ACCENT, 0.5),
-                         (scaled(8), scaled(42) - 1), (W - scaled(8), scaled(42) - 1), 1)
-        pygame.draw.line(screen, _blend(BG, ACCENT, 0.25),
-                         (scaled(8), scaled(42) + 1), (W - scaled(8), scaled(42) + 1), 1)
+        draw_header(title, "[A] Edit   [B] Back", f"v{VERSION}")
 
-        y = scaled(50)
-        ROW_H_S = scaled(42)
+        y = scaled(60)
         for i, (label, key) in enumerate(items):
             is_sel = (i == sel)
-            rect = pygame.Rect(scaled(14), y, W - scaled(28), ROW_H_S)
-
+            rect = pygame.Rect(scaled(20), y, W - scaled(40), scaled(38))
             if is_sel:
-                # Animated selection glow
-                glow_alpha = int(80 + 40 * math.sin(t * 3))
-                glow_color = _blend(BG, ACCENT, glow_alpha / 255)
-                pygame.draw.rect(screen, glow_color,
-                                 rect.inflate(scaled(4), scaled(2)),
-                                 border_radius=scaled(6))
-                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(5))
-                # Animated accent side bar
-                bar_h = int(ROW_H_S * (0.5 + 0.15 * math.sin(t * 4)))
-                accent_rect = pygame.Rect(rect.x, y + (ROW_H_S - bar_h) // 2,
-                                          scaled(3), bar_h)
-                pygame.draw.rect(screen, ACCENT, accent_rect, border_radius=scaled(1))
-            else:
-                if i % 2 == 0:
-                    pygame.draw.rect(screen, _blend(BG, BAR_BG, 0.3),
-                                     rect, border_radius=scaled(4))
-                pygame.draw.rect(screen, _blend(BG, ACCENT, 0.12),
-                                 rect, 1, border_radius=scaled(4))
+                pygame.draw.rect(screen, SEL_BG, rect, border_radius=scaled(6))
+            pygame.draw.rect(screen, ACCENT if is_sel else BAR_BG, rect, 1, border_radius=scaled(6))
 
-            text_x = rect.x + scaled(16)
-            lbl = F['md_b' if is_sel else 'md'].render(label, True, HDR if is_sel else TXT)
-            screen.blit(lbl, (text_x, rect.y + scaled(4)))
+            lbl = F['md_b' if is_sel else 'md'].render(label, True, TXT_SEL if is_sel else TXT)
+            screen.blit(lbl, (rect.x + scaled(12), rect.y + scaled(4)))
 
             # Show current value for editable settings (skip submenu-only items)
             if key not in ("back", "theme", "controller_map"):
@@ -2204,27 +2173,18 @@ def settings_menu(username=None):
                 else:
                     val_str = truncate(str(val), F['sm'], W // 2 - scaled(20)) if val else "(not set)"
                 vs = F['sm'].render(val_str, True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(vs, (rect.right - vs.get_width() - scaled(12),
-                                 rect.y + ROW_H_S // 2 - vs.get_height() // 2))
+                screen.blit(vs, (rect.right - vs.get_width() - scaled(12), rect.y + scaled(10)))
             elif key in ("theme", "controller_map", "cache_manager"):
                 # Show a chevron to indicate submenu
                 if key == "cache_manager":
                     manifest = load_cache_manifest()
                     count = len(manifest)
-                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}",
-                                          True, ACCENT if is_sel else TXT_DIM)
-                    screen.blit(info, (rect.right - info.get_width() - scaled(28),
-                                      rect.y + ROW_H_S // 2 - info.get_height() // 2))
+                    info = F['sm'].render(f"{count} game{'s' if count != 1 else ''}", True, ACCENT if is_sel else TXT_DIM)
+                    screen.blit(info, (rect.right - info.get_width() - scaled(28), rect.y + scaled(10)))
                 chev = F['md'].render("\u203A", True, ACCENT if is_sel else TXT_DIM)
-                screen.blit(chev, (rect.right - chev.get_width() - scaled(12),
-                                   rect.y + ROW_H_S // 2 - chev.get_height() // 2))
+                screen.blit(chev, (rect.right - chev.get_width() - scaled(12), rect.y + scaled(4)))
 
-            # Subtle separator
-            sep_y = y + ROW_H_S + scaled(1)
-            pygame.draw.line(screen, _blend(BG, ACCENT, 0.08),
-                             (scaled(22), sep_y), (W - scaled(22), sep_y), 1)
-
-            y += ROW_H_S + scaled(4)
+            y += scaled(44)
 
         current_key = items[sel][1]
         hint = setting_hints.get(current_key, "")
@@ -2234,7 +2194,7 @@ def settings_menu(username=None):
         pygame.display.flip()
         if _need_fade:
             fade_from_black(); _need_fade = False
-        clock.tick(60)
+        clock.tick(30)
 
 
 # ═══ Controller Mapping Submenu ══════════════════════════════
@@ -3625,9 +3585,12 @@ def screen_main_menu():
                     sel_col = min(COLS - 1, sel_col + 1); play_sfx('navigate')
                 elif ev.key in (pygame.K_RETURN, pygame.K_SPACE):
                     idx = sel_row * COLS + sel_col
+                    choice_name = MENU_ICONS[idx][0]
+                    if choice_name == "Memory Cards" and _is_l2_held():
+                        choice_name = "Memory Cards+BIOS"
                     play_sfx('select')
                     fade_to_black()
-                    return MENU_ICONS[idx][0]
+                    return choice_name
                 elif ev.key == pygame.K_ESCAPE:
                     play_sfx('back')
                     fade_to_black()
@@ -3635,9 +3598,12 @@ def screen_main_menu():
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == BTN["confirm"]:
                     idx = sel_row * COLS + sel_col
+                    choice_name = MENU_ICONS[idx][0]
+                    if choice_name == "Memory Cards" and _is_l2_held():
+                        choice_name = "Memory Cards+BIOS"
                     play_sfx('select')
                     fade_to_black()
-                    return MENU_ICONS[idx][0]
+                    return choice_name
                 elif ev.button == BTN["back"]:
                     play_sfx('back')
                     fade_to_black()
@@ -5167,19 +5133,19 @@ def main():
                     else:
                         break  # back to card picker
 
+        elif choice == "Memory Cards+BIOS":
+            # L2 was held when selecting Memory Cards — boot to PS2 BIOS
+            if confirm_dialog("Boot to PS2 BIOS?\nManage saves in the real PS2 system menu."):
+                _launch_ps2_bios(user)
+                screen, W, H, F, joy = init_display()
+                init_sounds()
+                apply_volume()
+                show_welcome_back(user)
+                pygame.event.clear()
+
         elif choice == "Memory Cards":
-            # L2 held = boot to PS2 BIOS for save management
-            if _is_l2_held():
-                if confirm_dialog("Boot to PS2 BIOS?\nManage saves in the real PS2 system menu."):
-                    _launch_ps2_bios(user)
-                    screen, W, H, F, joy = init_display()
-                    init_sounds()
-                    apply_volume()
-                    show_welcome_back(user)
-                    pygame.event.clear()
-            else:
-                # Card management directly
-                screen_memcard_picker(user)
+            # Normal card management
+            screen_memcard_picker(user)
 
         elif choice == "Cache":
             cache_manager_screen()
