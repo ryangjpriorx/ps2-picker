@@ -20,7 +20,7 @@ Usage:
     python3 ps2-picker.py --check-deps Run dependency checker first
 """
 
-VERSION = '0.1.0'
+VERSION = '0.0.3'
 
 # ─── Standard Library Imports ───────────────────────────────────
 import os, sys, subprocess, glob, shutil, time, json, warnings, struct, math, platform, zipfile
@@ -1709,6 +1709,16 @@ def settings_menu(username=None):
         ("Controller Mapping", "controller_map"),
         ("Back", "back"),
     ]
+    setting_hints = {
+        "volume":          "Adjust UI sound effects volume or mute entirely",
+        "rom_dir":         "Folder containing your PS2 game archives (.zip, .7z, .iso, .chd)",
+        "core_path":       "Path to the PCSX2 RetroArch core (.so or .dll)",
+        "local_cache_dir": "Where extracted games are stored for faster loading",
+        "max_cached_games":"Number of extracted games to keep before oldest is removed (1-20)",
+        "theme":           "Choose a color preset or create your own custom theme",
+        "controller_map":  "Remap controller buttons for all menu actions",
+        "back":            "Return to the game list",
+    }
     sel = 0
     last_joy = 0
 
@@ -1790,7 +1800,11 @@ def settings_menu(username=None):
 
             y += scaled(44)
 
-        draw_hint_bar("Settings are saved per-user when logged in")
+        current_key = items[sel][1]
+        hint = setting_hints.get(current_key, "")
+        if username:
+            hint += "  (per-user)"
+        draw_hint_bar(hint)
         pygame.display.flip()
         clock.tick(30)
 
